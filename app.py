@@ -15,6 +15,7 @@ import time
 import re
 from dateutil import parser
 
+#Código compartido#
 # ==========================================
 # CONFIGURACIÓN INICIAL Y ESTILOS
 # ==========================================
