@@ -1,3 +1,5 @@
+## COPIA DE COLABORACIÓN - |19 de marzo de 2026
+
 import streamlit as st
 import requests
 import pandas as pd
