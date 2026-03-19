@@ -1318,9 +1318,8 @@ def load_investigacion_bm(start_date_str, end_date_str):
     return df
 # --- SECCIÓN: DISCURSOS ---
 @st.cache_data(show_spinner=False)
-@st.cache_data(show_spinner=False)
 def load_discursos_fmi(start_date_str, end_date_str):
-    """Extractor FMI - Discursos (Vía Coveo API) con Limpieza Avanzada"""
+    """Extractor FMI - Discursos y Transcripts (Vía Coveo API) con Limpieza Avanzada"""
     try:
         start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
         end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
@@ -1338,7 +1337,13 @@ def load_discursos_fmi(start_date_str, end_date_str):
         "Referer": "https://www.imf.org/",
         "User-Agent": "Mozilla/5.0"
     }
-    payload = {"aq": "@imftype==\"Speech\" AND @syslanguage==\"English\"", "numberOfResults": 150, "sortCriteria": "@imfdate descending"}
+    
+    # AQUÍ ESTÁ LA MAGIA: Buscamos ambos tipos en una sola petición
+    payload = {
+        "aq": "@imftype==(\"Speech\",\"Transcript\") AND @syslanguage==\"English\"", 
+        "numberOfResults": 150, 
+        "sortCriteria": "@imfdate descending"
+    }
 
     try:
         res = requests.post(url, headers=headers, json=payload, timeout=15)
@@ -1350,7 +1355,7 @@ def load_discursos_fmi(start_date_str, end_date_str):
                 raw_data = item.get("raw", {})
                 raw_date = raw_data.get("date")
                 
-                # Extraemos el autor
+                # Extraemos el autor/vocero
                 autor = raw_data.get("imfspeaker", "")
                 if isinstance(autor, list) and len(autor) > 0: autor = autor[0]
                 autor = clean_author_name(autor)
@@ -1362,15 +1367,15 @@ def load_discursos_fmi(start_date_str, end_date_str):
                 if not titulo_raw or not link or not parsed_date: continue
                 
                 # ---------------------------------------------------------
-                # LIMPIEZA NIVEL DIOS (Adiós comillas y subtítulos largos)
+                # LIMPIEZA NIVEL DIOS (Aplica para Speeches y Transcripts)
                 # ---------------------------------------------------------
                 titulo_limpio = titulo_raw
                 
-                # 1. Quitar la "cola" institucional (ej: " - Keynote Speech by...")
-                patron_sufijo = re.compile(r"(?i)\s*[\-–—]\s*.*?(speech|remarks|statement|address)\s+by\s+.*$")
+                # 1. Quitar la "cola" institucional (ej: " - Transcript of Press Briefing by...")
+                patron_sufijo = re.compile(r"(?i)\s*[\-–—]\s*.*?(speech|remarks|statement|address|transcript)\s+by\s+.*$")
                 titulo_limpio = patron_sufijo.sub("", titulo_limpio).strip()
                 
-                # 2. Quitar comillas sobrantes que hayan quedado expuestas
+                # 2. Quitar comillas sobrantes
                 titulo_limpio = titulo_limpio.strip('"').strip("'").strip()
                 
                 # 3. Formatear "Autor: Título" evitando duplicados
@@ -1384,6 +1389,7 @@ def load_discursos_fmi(start_date_str, end_date_str):
 
                 if start_date <= parsed_date <= end_date:
                     if not any(r['Link'] == link for r in rows):
+                        # Se guardan todos bajo el mismo Organismo
                         rows.append({"Date": parsed_date, "Title": titulo_final, "Link": link, "Organismo": "FMI"})
     except: pass
     
