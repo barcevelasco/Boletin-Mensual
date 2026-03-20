@@ -1529,7 +1529,7 @@ def load_investigacion_bid(start_date_str, end_date_str):
 
 @st.cache_data(show_spinner=False)
 def load_investigacion_fmi(start_date_str, end_date_str):
-    """Extractor FMI - Blogs de Investigación (Vía Coveo API Blindada)"""
+    """Extractor FMI - Blogs de Investigación (Vía Coveo API con llave exacta)"""
     try:
         start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
         end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
@@ -1546,13 +1546,12 @@ def load_investigacion_fmi(start_date_str, end_date_str):
         "Accept": "application/json",
         "Origin": "https://www.imf.org",
         "Referer": "https://www.imf.org/",
-        # 👇 MÁSCARA COMPLETA ANTI-BLOQUEO 👇
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" 
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
 
-    # 👇 RED DE BÚSQUEDA AMPLIADA 👇
+    # 👇 LA LLAVE MAESTRA DESCUBIERTA: IMF Blog Page 👇
     payload = {
-        "aq": "(@imftype==\"Blog Page\" OR @imfcontenttype==\"Blogs\") AND @syslanguage==\"English\"",
+        "aq": "@imftype==\"IMF Blog Page\" AND @syslanguage==\"English\"",
         "numberOfResults": 150,
         "sortCriteria": "@imfdate descending"
     }
