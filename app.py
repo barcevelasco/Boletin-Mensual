@@ -88,6 +88,85 @@ def clean_author_name(name):
 # ==========================================
 
 # --- SECCIÓN: REPORTES ---
+@st.cache_data(show_spinner=False)
+def load_reportes_fem(start_date_str, end_date_str):
+    """Extractor FEM - Versión Selenium Final (Scroll + Fallback de Fecha)"""
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    import time
+    import re
+
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+    except:
+        start_date = datetime.datetime(2025, 1, 1)
+        end_date = datetime.datetime.now()
+
+    rows = []
+    url = "https://es.weforum.org/publications/"
+    
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+    try:
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.get(url)
+        time.sleep(8)
+        # Scroll para despertar la lista dinámica
+        driver.execute_script("window.scrollTo(0, 1000);")
+        time.sleep(4)
+        
+        js_script = """
+        let res = [];
+        document.querySelectorAll('a[href*="/publications/"]').forEach(el => {
+            let title = el.innerText || el.textContent || "";
+            let container = el.closest('article') || el.closest('div[class*="wef-"]') || el.parentElement;
+            let date = container.querySelector('time')?.getAttribute('datetime');
+            if (title.length > 15) {
+                res.push({ t: title, l: el.href, d: date });
+            }
+        });
+        return res;
+        """
+        extracted = driver.execute_script(js_script)
+        driver.quit()
+
+        for item in extracted:
+            # Limpieza de título (quitar saltos de línea y frases de botones)
+            titulo = item['t'].split('\n')[0]
+            titulo = re.sub(r'(?i)Download PDF|Leer más|Read more|View details', '', titulo).strip()
+            link = item['l']
+            
+            if "/series/" in link: continue
+
+            # Parseo de Fecha
+            parsed_date = None
+            if item['d']:
+                try: parsed_date = parser.parse(item['d']).replace(tzinfo=None)
+                except: pass
+            
+            if not parsed_date:
+                # Fallback: Extraer /YYYY/MM/ del link
+                m = re.search(r'/(\d{4})/(\d{2})/', link)
+                if m: parsed_date = datetime.datetime(int(m.group(1)), int(m.group(2)), 1)
+
+            if parsed_date and start_date <= parsed_date <= end_date:
+                if not any(r['Link'] == link for r in rows):
+                    rows.append({"Date": parsed_date, "Title": titulo, "Link": link, "Organismo": "FEM"})
+    except:
+        pass
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date", ascending=False).drop_duplicates(subset=['Link'])
+    return df
+
 # BID (Annual Reports en inglés)
 @st.cache_data(show_spinner=False)
 def load_reportes_bid_en(start_date_str, end_date_str):
@@ -2626,6 +2705,8 @@ if modo_app == "Boletín":
                         df = load_reportes_cef(sd, ed)
                     elif org == "OCDE":
                         df = load_reportes_ocde(sd, ed)
+                    elif org == "FEM": 
+                        df = load_reportes_fem(sd, ed)
                 except Exception as e:
                     pass
 
@@ -2882,6 +2963,7 @@ elif modo_app == "Categorías":
                             df = load_reportes_cef(sd, ed)
                         elif o == "OCDE":
                             df = load_reportes_ocde(sd, ed)
+                        elif o == "FEM": df = load_reportes_fem(sd, ed)
 
                     elif tipo_doc == "Investigación":
                         if o == "BID":
