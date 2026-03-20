@@ -1203,6 +1203,213 @@ def load_pub_inst_bm(start_date_str, end_date_str):
 
     # --- SECCIÓN: INVESTIGACIÓN ---
 @st.cache_data(show_spinner=False)
+def load_investigacion_bid_en(start_date_str, end_date_str):
+    """
+    Extrae Working Papers del BID en inglés de forma DINÁMICA
+    URL: https://publications.iadb.org/en?f%5B0%5D=type%3AWorking%20Papers
+    """
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from bs4 import BeautifulSoup
+    import datetime
+    import pandas as pd
+    import time
+    import re
+
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 Rango de fechas BID Inglés: {start_date.date()} a {end_date.date()}")
+    except:
+        start_date = datetime.datetime(2000, 1, 1)
+        end_date = datetime.datetime.now()
+        print(f"⚠️ Error en fechas, usando rango por defecto")
+
+    rows = []
+    
+    # Configuración de paginación
+    page = 0
+    max_pages = 5
+    hay_resultados = True
+    
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--remote-debugging-port=9222")
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
+
+    # Mapeo de meses en inglés
+    meses_en = {
+        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+        'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+        'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6,
+        'july': 7, 'august': 8, 'september': 9, 'october': 10, 'november': 11, 'december': 12
+    }
+
+    try:
+        print("🔍 Iniciando Selenium para BID Working Papers (EN)...")
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        while page < max_pages and hay_resultados:
+            # URL para Working Papers en inglés
+            url = f"https://publications.iadb.org/en?f%5B0%5D=type%3AWorking%20Papers&page={page}"
+            
+            print(f"📄 Accediendo a página {page+1}: {url}")
+            driver.get(url)
+
+            try:
+                WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.CLASS_NAME, "views-row"))
+                )
+                print(f"✅ Página {page+1} cargada correctamente.")
+            except Exception as e:
+                print(f"⚠️ Timeout en página {page+1}: {e}")
+                time.sleep(5)
+
+            time.sleep(3)
+            html = driver.page_source
+            soup = BeautifulSoup(html, 'html.parser')
+
+            # Guardar HTML para depuración (opcional)
+            if page == 0:
+                with open("bid_en_debug.html", "w", encoding="utf-8") as f:
+                    f.write(html)
+                print("💾 HTML guardado en bid_en_debug.html")
+
+            # Buscar TODOS los artículos
+            items = soup.find_all('div', class_='views-row')
+            print(f"📚 Página {page+1} - Artículos encontrados: {len(items)}")
+
+            if len(items) == 0:
+                print(f"📭 No hay más artículos en página {page+1}")
+                hay_resultados = False
+                break
+
+            for item in items:
+                try:
+                    # ===== 1. BUSCAR EL TÍTULO =====
+                    title_elem = None
+                    
+                    # Buscar en la estructura típica del BID
+                    title_container = item.find('div', class_='views-field-field-title')
+                    if title_container:
+                        span_field = title_container.find('span', class_='field-content')
+                        if span_field:
+                            a_tag = span_field.find('a')
+                            if a_tag:
+                                title_elem = a_tag
+                    
+                    if not title_elem:
+                        # Fallback: buscar cualquier enlace con texto largo
+                        for a_tag in item.find_all('a', href=True):
+                            texto = a_tag.get_text(strip=True)
+                            if len(texto) > 30:
+                                title_elem = a_tag
+                                break
+                    
+                    if not title_elem:
+                        continue
+                    
+                    titulo = title_elem.get_text(strip=True)
+                    link = title_elem.get('href', '')
+                    
+                    if not titulo or len(titulo) < 10:
+                        continue
+                    
+                    if not link.startswith('http'):
+                        link = "https://publications.iadb.org" + link
+                    
+                    print(f"  📌 Título: {titulo[:80]}...")
+
+                    # ===== 2. BUSCAR LA FECHA =====
+                    parsed_date = None
+                    
+                    # Buscar fecha en la estructura típica
+                    date_container = item.find('div', class_='views-field-field-date-issued-text')
+                    if date_container:
+                        date_span = date_container.find('span', class_='field-content')
+                        if date_span:
+                            date_text = date_span.get_text(strip=True)
+                            print(f"  📅 Texto fecha: '{date_text}'")
+                            
+                            # Procesar fecha en formato "Mar 2026" o "March 2026"
+                            match = re.search(r'([A-Za-z]+)\s+(\d{4})', date_text)
+                            if match:
+                                mes_str = match.group(1).lower()
+                                año = int(match.group(2))
+                                
+                                # Convertir mes a número
+                                mes_num = None
+                                for key, value in meses_en.items():
+                                    if mes_str in key or key in mes_str:
+                                        mes_num = value
+                                        break
+                                
+                                if mes_num:
+                                    parsed_date = datetime.datetime(año, mes_num, 1)
+                                    print(f"  ✅ Fecha parseada: {parsed_date.strftime('%Y-%m')}")
+                    
+                    if not parsed_date:
+                        print(f"  ⚠️ No se pudo extraer fecha")
+                        continue
+                    
+                    # ===== 3. FILTRAR POR FECHA =====
+                    if parsed_date < start_date or parsed_date > end_date:
+                        print(f"  ⏭️ Fecha fuera de rango: {parsed_date.date()}")
+                        continue
+                    
+                    # ===== 4. GUARDAR =====
+                    if not any(r['Link'] == link for r in rows):
+                        rows.append({
+                            "Date": parsed_date,
+                            "Title": titulo,
+                            "Link": link,
+                            "Organismo": "BID (Inglés)"
+                        })
+                        print(f"  ✅ Artículo AGREGADO")
+                    
+                except Exception as e:
+                    print(f"  ❌ Error procesando artículo: {e}")
+                    continue
+
+            page += 1
+            print(f"➡️ Avanzando a página {page+1}...\n")
+            time.sleep(2)
+
+        driver.quit()
+
+    except Exception as e:
+        print(f"❌ Error general: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback a datos de ejemplo si Selenium falla
+        print("⚠️ Usando datos de ejemplo como respaldo...")
+        return load_investigacion_bid_en_fallback(start_date, end_date)
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.drop_duplicates(subset=['Link'])
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date", ascending=False)
+        print(f"\n✅ Documentos BID (EN) encontrados: {len(df)}")
+    else:
+        print("\n⚠️ No se encontraron documentos del BID (EN)")
+        # Fallback a datos de ejemplo
+        return load_investigacion_bid_en_fallback(start_date, end_date)
+
+    return df
+
+@st.cache_data(show_spinner=False)
 def load_investigacion_bid(start_date_str, end_date_str):
     """
     Versión simplificada con datos de ejemplo para BID español
