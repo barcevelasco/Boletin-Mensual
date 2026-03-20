@@ -89,8 +89,6 @@ def clean_author_name(name):
 
 # --- SECCIÓN: REPORTES ---
 # BID (Annual Reports en inglés)
-
-
 @st.cache_data(show_spinner=False)
 def load_reportes_bid_en(start_date_str, end_date_str):
     """
@@ -119,35 +117,31 @@ def load_reportes_bid_en(start_date_str, end_date_str):
         print(f"⚠️ Error en fechas, usando rango por defecto")
 
     rows = []
-
+    
     # Configuración de paginación
     page = 0
     max_pages = 5  # Límite de páginas a extraer
     hay_resultados = True
-
+    
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument(
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    chrome_options.add_argument(
-        "--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option(
-        "excludeSwitches", ["enable-automation"])
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
 
     try:
         print("🔍 Iniciando Selenium para BID Annual Reports (EN)...")
         driver = webdriver.Chrome(options=chrome_options)
-        driver.execute_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
         while page < max_pages and hay_resultados:
             # URL para Annual Reports en inglés
             url = f"https://publications.iadb.org/en?f%5B0%5D=type%3AAnnual%20Reports&page={page}"
-
+            
             print(f"\n📄 Accediendo a página {page+1}: {url}")
             driver.get(url)
 
@@ -157,8 +151,7 @@ def load_reportes_bid_en(start_date_str, end_date_str):
                 )
                 print(f"✅ Página {page+1} cargada correctamente.")
             except:
-                print(
-                    f"⚠️ La página {page+1} sigue mostrando 'Just a moment...', esperando...")
+                print(f"⚠️ La página {page+1} sigue mostrando 'Just a moment...', esperando...")
                 time.sleep(10)
 
             time.sleep(5)
@@ -189,14 +182,12 @@ def load_reportes_bid_en(start_date_str, end_date_str):
             docs_en_pagina = 0
             for idx, item in enumerate(items):
                 print(f"\n--- Procesando elemento {idx+1} ---")
-
+                
                 # ESTRATEGIA 1: Buscar específicamente el div con clase 'views-field-field-title'
                 title_elem = None
-                title_container = item.find(
-                    'div', class_='views-field-field-title')
+                title_container = item.find('div', class_='views-field-field-title')
                 if title_container:
-                    span_field = title_container.find(
-                        'span', class_='field-content')
+                    span_field = title_container.find('span', class_='field-content')
                     if span_field:
                         a_tag = span_field.find('a')
                         if a_tag:
@@ -234,28 +225,24 @@ def load_reportes_bid_en(start_date_str, end_date_str):
 
                 # Extraer fecha - VERSIÓN MEJORADA
                 parsed_date = None
-
+                
                 # Buscar específicamente el contenedor de fecha
-                date_container = item.find(
-                    'div', class_='views-field-field-date-issued-text')
+                date_container = item.find('div', class_='views-field-field-date-issued-text')
                 if date_container:
-                    date_span = date_container.find(
-                        'span', class_='field-content')
+                    date_span = date_container.find('span', class_='field-content')
                     if date_span:
                         date_text = date_span.get_text(strip=True)
                         print(f"  📅 Texto de fecha (específico): {date_text}")
-
+                        
                         # Intentar parsear con regex (ej: "Mar 2026")
-                        match = re.search(
-                            r'([A-Za-z]{3,9})\s+(\d{4})', date_text)
+                        match = re.search(r'([A-Za-z]{3,9})\s+(\d{4})', date_text)
                         if match:
                             mes_str, año_str = match.groups()
                             mes_num = meses_en.get(mes_str.lower()[:3])
                             if mes_num:
-                                parsed_date = datetime.datetime(
-                                    int(año_str), mes_num, 1)
+                                parsed_date = datetime.datetime(int(año_str), mes_num, 1)
                                 print(f"  ✅ Fecha parseada: {parsed_date}")
-
+                
                 # Fallback: buscar cualquier span con texto de fecha
                 if not parsed_date:
                     for span in item.find_all('span'):
@@ -265,10 +252,8 @@ def load_reportes_bid_en(start_date_str, end_date_str):
                             mes_str, año_str = match.groups()
                             mes_num = meses_en.get(mes_str.lower()[:3])
                             if mes_num:
-                                parsed_date = datetime.datetime(
-                                    int(año_str), mes_num, 1)
-                                print(
-                                    f"  ✅ Fecha parseada (fallback): {parsed_date}")
+                                parsed_date = datetime.datetime(int(año_str), mes_num, 1)
+                                print(f"  ✅ Fecha parseada (fallback): {parsed_date}")
                                 break
 
                 if not parsed_date:
@@ -279,8 +264,7 @@ def load_reportes_bid_en(start_date_str, end_date_str):
 
                 # Filtrar por fecha
                 if parsed_date < start_date or parsed_date > end_date:
-                    print(
-                        f"  ⏭️ Fecha fuera de rango: {parsed_date.date()} (rango: {start_date.date()} a {end_date.date()})")
+                    print(f"  ⏭️ Fecha fuera de rango: {parsed_date.date()} (rango: {start_date.date()} a {end_date.date()})")
                     continue
 
                 # Evitar duplicados
@@ -313,17 +297,14 @@ def load_reportes_bid_en(start_date_str, end_date_str):
         df = df.drop_duplicates(subset=['Link'])
         df["Date"] = pd.to_datetime(df["Date"])
         df = df.sort_values("Date", ascending=False)
-        print(
-            f"\n✅ Documentos BID (Reportes) encontrados en {page} páginas: {len(df)}")
+        print(f"\n✅ Documentos BID (Reportes) encontrados en {page} páginas: {len(df)}")
         print("\n📋 Primeros documentos:")
         for i, row in df.head(3).iterrows():
-            print(
-                f"  - {row['Date'].strftime('%Y-%m')}: {row['Title'][:80]}...")
+            print(f"  - {row['Date'].strftime('%Y-%m')}: {row['Title'][:80]}...")
     else:
         print("\n⚠️ No se encontraron documentos del BID (Reportes)")
 
     return df
-
 
 @st.cache_data(show_spinner=False)
 def load_reportes_bpi(start_date_str, end_date_str):
@@ -2808,8 +2789,7 @@ elif modo_app == "Categorías":
                     cols_vis = ["Fecha", "Tipo de Documento",
                                 "Nombre de Documento"]
 
-                st.markdown(disp[cols_vis].to_markdown(
-                    index=False), unsafe_allow_html=True)
+                st.markdown(disp[cols_vis].to_markdown(index=False), unsafe_allow_html=True)
             else:
                 st.warning(
                     "No se encontraron documentos para las fechas seleccionadas.")
