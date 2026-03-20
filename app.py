@@ -2294,161 +2294,86 @@ def load_data_cef(start_date_str, end_date_str):
         df = df.sort_values("Date", ascending=False)
     return df
 
-## Banco de España
 @st.cache_data(show_spinner=False)
 def load_data_bde(start_date_str, end_date_str):
-    """
-    Extrae discursos del Banco de España
-    URL: https://www.bde.es/wbe/en/noticias-eventos/actualidad-banco-espana/intervenciones-publicas/
-    """
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    rows = []
-    
+    """Extractor Banco de España - Versión Selenium (Sincronizada con Sandbox)"""
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    import datetime
+    import time
+    import re
+
     try:
         start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
         end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
-        print(f"🔍 BDE - Buscando desde {start_date.date()} hasta {end_date.date()}")
     except:
-        start_date = datetime.datetime(2000, 1, 1)
+        start_date = datetime.datetime(2025, 1, 1)
         end_date = datetime.datetime.now()
-        print(f"🔍 BDE - Error fechas, usando rango por defecto")
+
+    rows = []
+    url = "https://www.bde.es/wbe/en/noticias-eventos/actualidad-banco-espana/intervenciones-publicas/"
     
-    # URL base del Banco de España (inglés)
-    base_url = "https://www.bde.es/wbe/en/noticias-eventos/actualidad-banco-espana/intervenciones-publicas/"
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
     
-    # Probamos con las primeras 3 páginas
-    for page in range(1, 4):
-        url = f"{base_url}?page={page}&role=%20&sort=DESC&limit=10"
-        
-        try:
-            print(f"\n📄 BDE - Procesando página {page}...")
-            print(f"   URL: {url}")
+    try:
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.get(url)
+        time.sleep(8) 
+
+        js_script = """
+        let data = [];
+        let results = document.querySelectorAll('.block-search-result, .block-search-result--image');
+        results.forEach(el => {
+            let titleEl = el.querySelector('.block-search-result__title, a');
+            let dateEl = el.querySelector('.block-search-result__date');
+            let linkEl = el.querySelector('a');
+            data.push({
+                title: titleEl ? titleEl.innerText : '',
+                dateText: dateEl ? dateEl.innerText : '',
+                link: linkEl ? linkEl.href : ''
+            });
+        });
+        return data;
+        """
+        extracted = driver.execute_script(js_script)
+        driver.quit()
+
+        for item in extracted:
+            raw_title = item['title'].strip()
+            raw_date_str = item['dateText'].strip()
+            link = item['link']
             
-            res = requests.get(url, headers=headers, timeout=15)
-            print(f"   Status code: {res.status_code}")
-            
-            if res.status_code != 200:
-                print(f"   ⚠️ Error {res.status_code}")
-                continue
-                
-            soup = BeautifulSoup(res.text, 'html.parser')
-            
-            # Buscar TODOS los resultados
-            items = soup.find_all('div', class_='block-search-result')
-            print(f"   📚 Encontrados {len(items)} elementos con clase 'block-search-result'")
-            
-            if not items:
-                items = soup.find_all('div', class_='block-search-result--image')
-                print(f"   📚 Encontrados {len(items)} elementos con clase 'block-search-result--image'")
-            
-            # Si aún no hay items, buscar cualquier cosa que pueda contener fechas
-            if not items:
-                # Buscar todos los divs que podrían ser resultados
-                all_divs = soup.find_all('div')
-                print(f"   📚 Total divs en página: {len(all_divs)}")
-                
-                # Buscar específicamente por fechas
-                fechas = soup.find_all('p', class_=lambda c: c and 'date' in str(c))
-                print(f"   📅 Elementos con 'date' en clase: {len(fechas)}")
-                for f in fechas[:3]:  # Mostrar primeros 3
-                    print(f"      Ejemplo: '{f.get_text(strip=True)}'")
-            
-            for idx, item in enumerate(items):
-                print(f"\n   --- Procesando item {idx+1} ---")
-                
-                try:
-                    # ===== 1. EXTRAER FECHA =====
-                    date_p = item.find('p', class_='block-search-result__date')
-                    if not date_p:
-                        date_p = item.find('p', class_=lambda c: c and 'date' in str(c))
-                    
-                    if date_p:
-                        date_text = date_p.get_text(strip=True)
-                        print(f"      📅 Texto fecha: '{date_text}'")
-                    else:
-                        print(f"      ⚠️ No se encontró fecha")
-                        continue
-                    
-                    # Intentar parsear fecha
-                    try:
-                        parsed_date = datetime.datetime.strptime(date_text, '%d/%m/%Y')
-                        print(f"      ✅ Fecha parseada: {parsed_date.date()}")
-                    except:
-                        try:
-                            # Intentar otro formato
-                            parsed_date = parser.parse(date_text, dayfirst=True)
-                            print(f"      ✅ Fecha parseada (parser): {parsed_date.date()}")
-                        except:
-                            print(f"      ❌ No se pudo parsear fecha")
-                            continue
-                    
-                    if parsed_date < start_date or parsed_date > end_date:
-                        print(f"      ⏭️ Fuera de rango: {parsed_date.date()}")
-                        continue
-                    
-                    # ===== 2. EXTRAER TÍTULO Y ENLACE =====
-                    title_p = item.find('p', class_='block-search-result__title')
-                    if not title_p:
-                        # Buscar cualquier enlace con texto largo
-                        a_tags = item.find_all('a', href=True)
-                        for a in a_tags:
-                            if len(a.get_text(strip=True)) > 20:
-                                title_p = a
-                                break
-                    
-                    if title_p:
-                        a_tag = title_p if title_p.name == 'a' else title_p.find('a')
-                        if a_tag and a_tag.name == 'a':
-                            titulo = a_tag.get_text(strip=True)
-                            link = a_tag.get('href', '')
-                            print(f"      📌 Título: {titulo[:80]}...")
-                        else:
-                            print(f"      ⚠️ No se encontró enlace")
-                            continue
-                    else:
-                        print(f"      ⚠️ No se encontró título")
-                        continue
-                    
-                    if not link.startswith('http'):
-                        if link.startswith('/'):
-                            link = "https://www.bde.es" + link
-                        else:
-                            link = "https://www.bde.es/" + link
-                    
-                    # ===== 3. GUARDAR =====
-                    if not any(r['Link'] == link for r in rows):
-                        rows.append({
-                            "Date": parsed_date,
-                            "Title": titulo,
-                            "Link": link,
-                            "Organismo": "BdE (España)"
-                        })
-                        print(f"      ✅ AGREGADO")
-                    else:
-                        print(f"      ⏭️ Duplicado")
-                    
-                except Exception as e:
-                    print(f"      ❌ Error: {e}")
-                    continue
-            
-            # Pequeña pausa entre páginas
-            time.sleep(1)
-            
-        except Exception as e:
-            print(f"  ❌ Error en página {page}: {e}")
-            continue
-    
+            if not raw_title or not raw_date_str: continue
+
+            parsed_date = None
+            try:
+                parsed_date = datetime.datetime.strptime(raw_date_str, '%d/%m/%Y')
+            except:
+                match = re.search(r'(\d{2}/\d{2}/\d{4})', raw_date_str)
+                if match:
+                    parsed_date = datetime.datetime.strptime(match.group(1), '%d/%m/%Y')
+
+            if parsed_date and start_date <= parsed_date <= end_date:
+                if not any(r['Link'] == link for r in rows):
+                    rows.append({
+                        "Date": parsed_date,
+                        "Title": raw_title,
+                        "Link": link,
+                        "Organismo": "BdE (España)"
+                    })
+    except Exception as e:
+        print(f"Error BDE: {e}")
+
     df = pd.DataFrame(rows)
     if not df.empty:
         df["Date"] = pd.to_datetime(df["Date"])
         df = df.sort_values("Date", ascending=False)
-        print(f"\n✅ BDE: {len(df)} discursos encontrados")
-    else:
-        print(f"\n⚠️ No se encontraron discursos del Banco de España")
-    
     return df
-
-
 # ==========================================
 # EXPORTACIÓN A WORD
 # ==========================================
@@ -2930,6 +2855,9 @@ elif modo_app == "Categorías":
                             df = load_discursos_fmi(sd, ed)
                         elif o == "PBoC (China)":
                             df = load_data_pboc(sd, ed)
+                        # Busca esta parte y déjala así:
+                        elif o == "BdE (España)":  # <--- Asegúrate que diga exactamente "BdE (España)"
+                            df = load_data_bde(sd, ed)
 
                     elif tipo_doc == "Reportes":
                         if o == "BID":
