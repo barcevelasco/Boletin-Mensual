@@ -76,11 +76,18 @@ st.markdown("""
 
 
 def clean_author_name(name):
-    if not name:
-        return ""
-    cleaned = name.strip().title()
-    cleaned = re.sub(r'\b([A-Z])\.\s*([A-Z])',
-                     lambda m: f"{m.group(1)}. {m.group(2)}", cleaned)
+    if not name: return ""
+    minusc = ['de', 'van', 'von', 'der', 'del', 'la']
+    words = name.strip().split()
+    
+    # Capitaliza todo excepto las preposiciones europeas
+    cleaned_words = [w.capitalize() if w.lower() not in minusc else w.lower() for w in words]
+    if cleaned_words:
+        cleaned_words[0] = cleaned_words[0].capitalize() # La primera siempre mayúscula
+        
+    cleaned = " ".join(cleaned_words)
+    # Arreglar iniciales pegadas (ej. "J.M. Keynes" -> "J. M. Keynes")
+    cleaned = re.sub(r'\b([A-Z])\.\s*([A-Z])', lambda m: f"{m.group(1)}. {m.group(2)}", cleaned)
     return cleaned
 
 # ==========================================
@@ -1919,58 +1926,145 @@ def load_discursos_fmi(start_date_str, end_date_str):
         df = df.sort_values("Date", ascending=False)
     return df
 
-
 @st.cache_data(show_spinner=False)
 def load_data_ecb(start_date_str, end_date_str):
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    rows = []
+    """Extractor ECB (Europa) - FOEDB Bypass + Autor por Renglón"""
+    import undetected_chromedriver as uc
+    import pandas as pd
+    import datetime
+    import time
+    import re
+    from dateutil import parser
+    
     try:
         start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
         end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
-        anios_num = list(range(start_date.year, end_date.year + 1))
     except:
-        anios_num = [2026, 2025, 2024]
-    for year in anios_num:
-        url = f"https://www.ecb.europa.eu/press/key/date/{year}/html/index.en.html"
-        try:
-            res = requests.get(url, headers=headers, timeout=12)
-            soup = BeautifulSoup(res.text, 'html.parser')
-            for a in soup.find_all('a', href=True):
-                href = a['href']
-                if f'/press/key/date/{year}/html/' in href and href.endswith('.html') and 'index' not in href:
-                    link = "https://www.ecb.europa.eu" + \
-                        href if href.startswith('/') else href
-                    titulo_raw = a.get_text(strip=True)
-                    if len(titulo_raw) < 5:
-                        continue
-                    parent = a.find_parent(['dd', 'div', 'li'])
-                    if not parent:
-                        continue
-                    dt = parent.find_previous_sibling('dt')
-                    fecha_str = dt.get_text(strip=True) if dt else ""
-                    try:
-                        parsed_date = parser.parse(fecha_str)
-                    except:
-                        continue
-                    autor = ""
-                    sub = parent.find('div', class_='subtitle')
-                    if sub:
-                        match = re.search(
-                            r'\b(?:by|with)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', sub.get_text(separator=' ', strip=True))
-                        if match:
-                            autor = clean_author_name(match.group(1))
-                    final_t = f"{autor}: {titulo_raw}" if autor and autor not in titulo_raw else titulo_raw
-                    if not any(r['Link'] == link for r in rows):
-                        rows.append({"Date": parsed_date, "Title": final_t,
-                                    "Link": link, "Organismo": "ECB (Europa)"})
-        except:
-            pass
+        start_date = datetime.datetime(2025, 1, 1)
+        end_date = datetime.datetime.now()
+
+    rows = []
+    url = "https://www.ecb.europa.eu/press/key/html/index.en.html"
+    
+    options = uc.ChromeOptions()
+    options.add_argument('--headless')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--window-size=1920,1080')
+    options.binary_location = '/usr/bin/chromium'
+
+    try:
+        driver = uc.Chrome(options=options)
+        driver.get(url)
+        time.sleep(4)
+        
+        # Aceptar cookies para desbloquear inyección de datos
+        js_cookie = """
+        let btn = document.querySelector('.ecb-cookieConsent button.check, #cookieConsent button.check');
+        if (btn) { btn.click(); return true;}
+        return false;
+        """
+        driver.execute_script(js_cookie)
+        time.sleep(5) 
+        
+        # Scroll para cargar el historial
+        for i in range(1, 6):
+            driver.execute_script(f"window.scrollTo(0, {i * 1200});")
+            time.sleep(1.5)
+
+        # Extractor de bloques visuales
+        js_extract = """
+        let data = [];
+        let processedLinks = new Set();
+        
+        document.querySelectorAll('a[href*="/press/key/"]').forEach(a => {
+            let title = a.innerText.trim();
+            let href = a.href;
+            
+            if (title.length > 10 && !href.endsWith('index.en.html') && !processedLinks.has(href)) {
+                processedLinks.add(href);
+                
+                let contextText = "";
+                let dd = a.closest('dd');
+                if (dd) {
+                    contextText = dd.innerText;
+                    if (dd.previousElementSibling && dd.previousElementSibling.tagName === 'DT') {
+                        contextText += "\\n" + dd.previousElementSibling.innerText;
+                    }
+                } else {
+                    let parent = a.closest('div[class*="result"], li, article') || a.parentElement;
+                    contextText = parent ? parent.innerText : '';
+                }
+                
+                data.push({ t: title, l: href, c: contextText });
+            }
+        });
+        return data;
+        """
+        extracted = driver.execute_script(js_extract)
+        
+        for item in extracted:
+            titulo = item['t'].strip()
+            link = item['l']
+            contexto = item['c'] 
+            
+            parsed_date = None
+            date_match = re.search(r'(\d{1,2}\s+[A-Za-z]+\s+\d{4})', contexto.replace('\n', ' '))
+            if date_match:
+                try: parsed_date = parser.parse(date_match.group(0))
+                except: pass
+                
+            if not parsed_date:
+                m = re.search(r'/(20\d{2})/', link)
+                if m: parsed_date = datetime.datetime(int(m.group(1)), 1, 1)
+            
+            # Búsqueda de Autor por renglón
+            autor = ""
+            lineas = [linea.strip() for linea in contexto.split('\n') if linea.strip()]
+            
+            for i, linea in enumerate(lineas):
+                if titulo in linea or linea in titulo:
+                    if i + 1 < len(lineas):
+                        cand = lineas[i + 1]
+                        if not any(x in cand.lower() for x in ['details', 'annexes', 'speech', 'interview', 'related', 'pdf']):
+                            if not re.search(r'\d{4}', cand):
+                                autor = clean_author_name(cand)
+                    break
+            
+            # Fallback clásico
+            if not autor:
+                match_autor = re.search(r'\b(?:by|with)\s+([A-ZÀ-ÿ][A-Za-zÀ-ÿ\.\-\s]{2,35}?)(?:,|\s+at\s+|$)', titulo, re.IGNORECASE)
+                if match_autor: 
+                    autor = clean_author_name(match_autor.group(1))
+
+            # Ensamblaje final del título
+            titulo_limpio = titulo
+            if autor:
+                titulo_limpio = re.sub(rf'(?i)\s*(?:by|with)\s+{re.escape(autor)}', '', titulo_limpio)
+                titulo_limpio = re.sub(r'^\s*,\s*', '', titulo_limpio).strip()
+                final_title = f"{autor}: {titulo_limpio}"
+            else:
+                final_title = titulo
+            
+            if parsed_date and start_date <= parsed_date <= end_date:
+                if not any(r['Link'] == link for r in rows):
+                    rows.append({
+                        "Date": parsed_date,
+                        "Title": final_title,
+                        "Link": link,
+                        "Organismo": "ECB (Europa)"
+                    })
+
+    except Exception as e:
+        print(f"Error ECB: {e}")
+    finally:
+        if 'driver' in locals(): driver.quit()
+
     df = pd.DataFrame(rows)
     if not df.empty:
         df["Date"] = pd.to_datetime(df["Date"])
-        df = df.sort_values("Date", ascending=False)
+        df = df.sort_values(by="Date", ascending=False).drop_duplicates(subset=['Link'])
     return df
-
 
 @st.cache_data(show_spinner=False)
 def load_data_bis():
