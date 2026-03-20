@@ -96,66 +96,65 @@ def clean_author_name(name):
 # ==========================================
 @st.cache_data(show_spinner=False)
 def buscar_link_inteligente(titulo, organismo):
-    """Busca en Crossref (API Académica) de forma estricta. CERO Google."""
-    try:
-        # Limpieza agresiva: Cortamos en los dos puntos (:) para buscar solo la raíz del reporte
-        titulo_corto = titulo.split(':')[0]
-        titulo_limpio = re.sub(r'[^a-zA-Z0-9\s]', '', titulo_corto)
-        query_limpia = urllib.parse.quote(titulo_limpio)
-        
-        url_crossref = f"https://api.crossref.org/works?query.title={query_limpia}&select=URL,publisher&rows=5"
-        headers = {'User-Agent': 'mailto:bot_boletin_mensual@banco.com'} 
-        
-        # Pausa para que la API no nos bloquee por velocidad
-        time.sleep(0.5)
-        res = requests.get(url_crossref, headers=headers, timeout=8)
-        
-        if res.status_code == 200:
-            items = res.json().get('message', {}).get('items', [])
-            for item in items:
-                pub = item.get('publisher', '').lower()
-                if 'oecd' in pub or 'organisation for economic' in pub or organismo.lower() in pub:
-                    url_oficial = item.get('URL')
-                    if url_oficial:
-                        return url_oficial
-    except Exception as e:
-        pass
+    """Cazador de DOIs de Doble Impacto (Estricto + Fuzzy). Cero Google."""
+    import urllib.parse
+    import requests
+    import time
+    import re
 
-    # Si la API oficial falla o el reporte es demasiado nuevo, queda en blanco.
+    # 1. Limpieza base: Quitamos todo después de ':' o '-' para tener la raíz fuerte del reporte
+    titulo_raiz = re.split(r'[:\-]', titulo)[0].strip()
+    titulo_limpio = re.sub(r'[^a-zA-Z0-9\s]', '', titulo_raiz)
+    
+    headers = {'User-Agent': 'mailto:bot_investigacion@banco.com'}
+    time.sleep(0.5) # Respetar el límite de velocidad de la API
+
+    def consultar_api(query_param, texto_busqueda, modo_estricto=True):
+        query_enc = urllib.parse.quote(texto_busqueda)
+        url = f"https://api.crossref.org/works?{query_param}={query_enc}&select=URL,title,publisher&rows=4"
+        
+        try:
+            res = requests.get(url, headers=headers, timeout=8)
+            if res.status_code == 200:
+                items = res.json().get('message', {}).get('items', [])
+                
+                for item in items:
+                    url_oficial = item.get('URL')
+                    if not url_oficial: continue
+                        
+                    pub = item.get('publisher', '').lower()
+                    titulo_api = item.get('title', [''])[0].lower()
+                    
+                    # Modo Estricto: Exigimos que la editorial coincida
+                    if modo_estricto:
+                        if 'oecd' in pub or 'organisation' in pub or organismo.lower() in pub:
+                            return url_oficial
+                    
+                    # Modo Fuzzy (Rescate): Si la editorial está mal registrada, 
+                    # pero el título de la API contiene gran parte de nuestro título, lo damos por bueno.
+                    else:
+                        titulo_comparar = titulo_limpio.lower()
+                        # Si más del 70% del título base coincide, es el mismo documento
+                        if titulo_comparar in titulo_api or titulo_api in titulo_comparar:
+                            return url_oficial
+        except:
+            pass
+        return None
+
+    # --- ATAQUE 1: Búsqueda por Título Raíz (Estricto) ---
+    link = consultar_api("query.title", titulo_limpio, modo_estricto=True)
+    if link: return link
+
+    # --- ATAQUE 2: Búsqueda Bibliográfica Completa (Fuzzy/Difuso) ---
+    # Si falló el ataque 1, lanzamos el título completo tal cual viene en la web
+    # y relajamos el filtro de editorial por si lo registraron raro.
+    time.sleep(0.5) # Pausa entre re-intentos
+    link = consultar_api("query.bibliographic", titulo, modo_estricto=False)
+    if link: return link
+
+    # Si realmente no existe en la base global (rarísimo), lo dejamos en blanco 
+    # para que tu Word se exporte sin errores y en texto normal.
     return ""
-    """Busca en Crossref (API Académica) o genera link de Google 1-Clic"""
-    try:
-        # 1. Limpieza de título para la API: 
-        # Cortamos en los dos puntos (:) para buscar solo la idea principal y evitar que los subtítulos confundan a la base de datos.
-        titulo_corto = titulo.split(':')[0]
-        # Removemos caracteres especiales que puedan romper la URL
-        titulo_limpio = re.sub(r'[^a-zA-Z0-9\s]', '', titulo_corto)
-        query_limpia = urllib.parse.quote(titulo_limpio)
-        
-        url_crossref = f"https://api.crossref.org/works?query.title={query_limpia}&select=URL,publisher&rows=3"
-        headers = {'User-Agent': 'mailto:bot_boletin_mensual@banco.com'} 
-        
-        # 2. PAUSA ESTRATÉGICA: Esperamos medio segundo para que Crossref no nos bloquee por "Spam"
-        time.sleep(0.5)
-        
-        res = requests.get(url_crossref, headers=headers, timeout=8)
-        
-        if res.status_code == 200:
-            items = res.json().get('message', {}).get('items', [])
-            for item in items:
-                pub = item.get('publisher', '').lower()
-                # 3. Validación Ampliada
-                if 'oecd' in pub or 'organisation for economic' in pub or organismo.lower() in pub:
-                    url_oficial = item.get('URL')
-                    if url_oficial:
-                        return url_oficial
-    except Exception as e:
-        pass
-
-    # Fallback: Link directo a búsqueda en Google (Usa tu IP local al dar clic, 0 bloqueos)
-    dominio = "oecd.org" if organismo == "OCDE" else ""
-    google_query = urllib.parse.quote(f"site:{dominio} {titulo}" if dominio else titulo)
-    return f"https://www.google.com/search?q={google_query}"
 
 def procesar_texto_pegado(texto_crudo, organismo_nombre):
     """Extrae Fecha y Título del texto pegado. Retorna DataFrame estandarizado."""
