@@ -14,6 +14,7 @@ import calendar
 import time
 import re
 from dateutil import parser
+import urllib.parse # Necesario para la herramienta de rescate
 
 # ==========================================
 # CONFIGURACIÓN INICIAL Y ESTILOS
@@ -74,7 +75,6 @@ st.markdown("""
 # UTILIDADES DE FORMATO
 # ==========================================
 
-
 def clean_author_name(name):
     if not name: return ""
     minusc = ['de', 'van', 'von', 'der', 'del', 'la']
@@ -89,6 +89,110 @@ def clean_author_name(name):
     # Arreglar iniciales pegadas (ej. "J.M. Keynes" -> "J. M. Keynes")
     cleaned = re.sub(r'\b([A-Z])\.\s*([A-Z])', lambda m: f"{m.group(1)}. {m.group(2)}", cleaned)
     return cleaned
+
+
+# ==========================================
+# HERRAMIENTA DE RESCATE (TEXTO MANUAL)
+# ==========================================
+@st.cache_data(show_spinner=False)
+def buscar_link_inteligente(titulo, organismo):
+    """Busca en Crossref (API Académica) de forma estricta. CERO Google."""
+    try:
+        # Limpieza agresiva: Cortamos en los dos puntos (:) para buscar solo la raíz del reporte
+        titulo_corto = titulo.split(':')[0]
+        titulo_limpio = re.sub(r'[^a-zA-Z0-9\s]', '', titulo_corto)
+        query_limpia = urllib.parse.quote(titulo_limpio)
+        
+        url_crossref = f"https://api.crossref.org/works?query.title={query_limpia}&select=URL,publisher&rows=5"
+        headers = {'User-Agent': 'mailto:bot_boletin_mensual@banco.com'} 
+        
+        # Pausa para que la API no nos bloquee por velocidad
+        time.sleep(0.5)
+        res = requests.get(url_crossref, headers=headers, timeout=8)
+        
+        if res.status_code == 200:
+            items = res.json().get('message', {}).get('items', [])
+            for item in items:
+                pub = item.get('publisher', '').lower()
+                if 'oecd' in pub or 'organisation for economic' in pub or organismo.lower() in pub:
+                    url_oficial = item.get('URL')
+                    if url_oficial:
+                        return url_oficial
+    except Exception as e:
+        pass
+
+    # Si la API oficial falla o el reporte es demasiado nuevo, queda en blanco.
+    return ""
+    """Busca en Crossref (API Académica) o genera link de Google 1-Clic"""
+    try:
+        # 1. Limpieza de título para la API: 
+        # Cortamos en los dos puntos (:) para buscar solo la idea principal y evitar que los subtítulos confundan a la base de datos.
+        titulo_corto = titulo.split(':')[0]
+        # Removemos caracteres especiales que puedan romper la URL
+        titulo_limpio = re.sub(r'[^a-zA-Z0-9\s]', '', titulo_corto)
+        query_limpia = urllib.parse.quote(titulo_limpio)
+        
+        url_crossref = f"https://api.crossref.org/works?query.title={query_limpia}&select=URL,publisher&rows=3"
+        headers = {'User-Agent': 'mailto:bot_boletin_mensual@banco.com'} 
+        
+        # 2. PAUSA ESTRATÉGICA: Esperamos medio segundo para que Crossref no nos bloquee por "Spam"
+        time.sleep(0.5)
+        
+        res = requests.get(url_crossref, headers=headers, timeout=8)
+        
+        if res.status_code == 200:
+            items = res.json().get('message', {}).get('items', [])
+            for item in items:
+                pub = item.get('publisher', '').lower()
+                # 3. Validación Ampliada
+                if 'oecd' in pub or 'organisation for economic' in pub or organismo.lower() in pub:
+                    url_oficial = item.get('URL')
+                    if url_oficial:
+                        return url_oficial
+    except Exception as e:
+        pass
+
+    # Fallback: Link directo a búsqueda en Google (Usa tu IP local al dar clic, 0 bloqueos)
+    dominio = "oecd.org" if organismo == "OCDE" else ""
+    google_query = urllib.parse.quote(f"site:{dominio} {titulo}" if dominio else titulo)
+    return f"https://www.google.com/search?q={google_query}"
+
+def procesar_texto_pegado(texto_crudo, organismo_nombre):
+    """Extrae Fecha y Título del texto pegado. Retorna DataFrame estandarizado."""
+    rows = []
+    lineas = [linea.strip() for linea in texto_crudo.split('\n') if linea.strip()]
+    patron_fecha = r'(\d{1,2}\s+[A-Za-z]{3,}\s+\d{4})'
+    
+    i = 0
+    while i < len(lineas):
+        match_fecha = re.search(patron_fecha, lineas[i])
+        if match_fecha:
+            try:
+                parsed_date = parser.parse(match_fecha.group(1))
+            except:
+                i += 1; continue
+            
+            titulo = ""
+            if i >= 1:
+                titulo = lineas[i-1]
+                basura_menu = ['list view', 'grid view', 'z-a', 'a-z', 'oldest', 'most recent', 'most relevant', 'order by']
+                if titulo.lower() in basura_menu and i >= 2: 
+                    titulo = lineas[i-2]
+            
+            if titulo and len(titulo) > 10 and not any(b in titulo.lower() for b in ['search', 'filter', 'sort by', 'publications']):
+                rows.append({
+                    "Date": parsed_date, # Formato datetime real para tu app
+                    "Title": titulo,
+                    "Link": "Pendiente",
+                    "Organismo": organismo_nombre
+                })
+        i += 1
+        
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(by="Date", ascending=False).drop_duplicates(subset=['Title'])
+    return df
+
 
 # ==========================================
 # FUNCIONES DE EXTRACCIÓN (BACKEND)
@@ -573,9 +677,7 @@ def load_reportes_bm(start_date_str, end_date_str):
 
     df = pd.DataFrame(rows)
     if not df.empty:
-        df["Date"] = pd.to_datetime(df["Date"])
-        if df["Date"].dt.tz is not None:
-            df["Date"] = df["Date"].dt.tz_convert(None)
+        df["Date"] = pd.to_datetime(df["Date"]).dt.tz_convert(None)
         df = df.sort_values("Date", ascending=False)
     return df
 
@@ -1436,12 +1538,6 @@ def load_investigacion_bid_en(start_date_str, end_date_str):
             html = driver.page_source
             soup = BeautifulSoup(html, 'html.parser')
 
-            # Guardar HTML para depuración (opcional)
-            if page == 0:
-                with open("bid_en_debug.html", "w", encoding="utf-8") as f:
-                    f.write(html)
-                print("💾 HTML guardado en bid_en_debug.html")
-
             # Buscar TODOS los artículos
             items = soup.find_all('div', class_='views-row')
             print(f"📚 Página {page+1} - Artículos encontrados: {len(items)}")
@@ -1548,9 +1644,6 @@ def load_investigacion_bid_en(start_date_str, end_date_str):
         print(f"❌ Error general: {e}")
         import traceback
         traceback.print_exc()
-        # Fallback a datos de ejemplo si Selenium falla
-        print("⚠️ Usando datos de ejemplo como respaldo...")
-        return load_investigacion_bid_en_fallback(start_date, end_date)
 
     df = pd.DataFrame(rows)
     if not df.empty:
@@ -1560,8 +1653,6 @@ def load_investigacion_bid_en(start_date_str, end_date_str):
         print(f"\n✅ Documentos BID (EN) encontrados: {len(df)}")
     else:
         print("\n⚠️ No se encontraron documentos del BID (EN)")
-        # Fallback a datos de ejemplo
-        return load_investigacion_bid_en_fallback(start_date, end_date)
 
     return df
 
@@ -2715,6 +2806,57 @@ if modo_app == "Boletín":
     m_sel = c1.multiselect("Mes(es)", options=list(meses_dict.keys()))
     a_sel = c2.multiselect("Año(s)", options=anios_str, default=["2026"])
 
+    # ========================================================
+    # UI: HERRAMIENTA DE RESCATE (TEXTO MANUAL)
+    # ========================================================
+    st.markdown("---")
+    with st.expander("🛠️ Herramienta de Rescate: Extracción por Texto Pegado", expanded=False):
+        st.info("Usa esto si alguna página (como la OCDE) falla. Pega el texto crudo (Ctrl+A, Ctrl+C).")
+        
+        col_txt, col_ctrl = st.columns([2, 1])
+        with col_txt:
+            texto_manual = st.text_area("Texto crudo de la web:", height=150)
+        with col_ctrl:
+            org_manual = st.selectbox("Organismo a rescatar:", ["OCDE", "FEM", "BID", "BM", "FMI", "CEF", "BPI", "Otro"])
+            mes_manual = st.selectbox("Mes objetivo:", [1,2,3,4,5,6,7,8,9,10,11,12], index=datetime.datetime.now().month-1, format_func=lambda x: calendar.month_name[x].capitalize())
+            año_manual = st.number_input("Año objetivo:", min_value=2020, max_value=2030, value=datetime.datetime.now().year)
+
+        if st.button("Procesar y Buscar Links Oficiales"):
+            if texto_manual:
+                with st.spinner("Procesando texto y buscando links..."):
+                    df_manual = procesar_texto_pegado(texto_manual, org_manual)
+                    
+                    if not df_manual.empty:
+                        # Filtramos exactamente por el mes y año que indicaste
+                        df_filtrado = df_manual[
+                            (df_manual['Date'].dt.month == mes_manual) & 
+                            (df_manual['Date'].dt.year == año_manual)
+                        ].copy()
+                        
+                        if not df_filtrado.empty:
+                            # Buscamos los links solo de los filtrados
+                            for idx in df_filtrado.index:
+                                titulo_actual = df_filtrado.loc[idx, "Title"]
+                                df_filtrado.loc[idx, "Link"] = buscar_link_inteligente(titulo_actual, org_manual)
+                            
+                            # Asignamos la categoría para que embone en el Word
+                            df_filtrado['Categoría'] = "Reportes" # Por defecto lo mandamos a reportes
+                            
+                            # Guardamos en session_state para la extracción principal
+                            if 'df_extra' not in st.session_state:
+                                st.session_state.df_extra = pd.DataFrame()
+                                
+                            st.session_state.df_extra = pd.concat([st.session_state.df_extra, df_filtrado], ignore_index=True)
+                            
+                            st.success(f"¡{len(df_filtrado)} reportes procesados! Se incluirán al Generar el Boletín.")
+                            st.dataframe(df_filtrado, use_container_width=True)
+                        else:
+                            st.warning("Se extrajeron reportes, pero ninguno coincide con el mes y año seleccionados.")
+            else:
+                st.error("Pega algo de texto primero.")
+    st.markdown("---")
+    # ========================================================
+
     if st.button("📄 Generar Boletín Mensual", type="primary"):
         if not m_sel or not a_sel:
             st.warning("⚠️ Selecciona mes y año.")
@@ -2767,7 +2909,6 @@ if modo_app == "Boletín":
                         df = load_discursos_fmi(sd, ed)
                     elif org == "BBk (Alemania)":
                         df = load_data_bbk(sd, ed)
-                    # 👇 AGREGA ESTAS DOS LÍNEAS AQUÍ 👇
                     elif org == "BdE (España)":
                         df = load_data_bde(sd, ed)
                 except Exception as e:
@@ -2792,7 +2933,7 @@ if modo_app == "Boletín":
                     if org == "BID":
                         df = load_reportes_bid_en(sd, ed)
                     elif org == "BM":
-                        df = load_reportes_bm(sd, ed)  # <--- AGRÉGALO AQUÍ
+                        df = load_reportes_bm(sd, ed) 
                     elif org == "BPI":
                         df = load_reportes_bpi(sd, ed)
                     elif org == "CEF":
@@ -2904,6 +3045,11 @@ if modo_app == "Boletín":
                 paso_actual += 1
                 prog.progress(paso_actual / total_pasos)
 
+            # --- INYECCIÓN DE TEXTO MANUAL ---
+            if 'df_extra' in st.session_state and not st.session_state.df_extra.empty:
+                all_dfs.append(st.session_state.df_extra)
+                txt.text("Inyectando reportes manuales...")
+
             txt.empty()
             prog.empty()
 
@@ -2942,20 +3088,24 @@ if modo_app == "Boletín":
                     f"Se consolidaron **{len(f_df)}** documentos en total.")
                 word = generate_word(f_df_word, subtitle=", ".join(
                     m_sel) + " " + ", ".join(a_sel))
-                st.download_button("📄 Descargar Boletín",
+                
+                # Botón de Descarga
+                st.download_button("📄 Descargar Boletín en Word",
                                    word, f"Boletin_{'_'.join(m_sel)}.docx")
 
-                # --- PREPARACIÓN PARA LA VISTA PREVIA (Orden Cronológico + Columna Fecha) ---
+                # Limpiar cache manual después de generar el Word para no duplicar en el futuro
+                if 'df_extra' in st.session_state:
+                    del st.session_state.df_extra
+
+                # --- PREPARACIÓN PARA LA VISTA PREVIA ---
                 disp = f_df.copy()
                 disp = disp.sort_values(
                     by="Date", ascending=False)  # Orden cronológico
-                # Formatear fecha para que se vea bonita
                 disp["Fecha"] = disp["Date"].dt.strftime('%d/%m/%Y')
                 disp["Nombre de Documento"] = disp.apply(
                     lambda x: f"[{x['Title']}]({x['Link']})", axis=1)
                 disp = disp.rename(columns={"Categoría": "Tipo de Documento"})
 
-                # Mostrar en pantalla incluyendo la columna 'Fecha'
                 st.markdown(disp[["Fecha", "Tipo de Documento", "Organismo", "Nombre de Documento"]].to_markdown(
                     index=False), unsafe_allow_html=True)
             else:
@@ -3026,12 +3176,10 @@ elif modo_app == "Categorías":
                         elif o == "CEF":
                             df = load_data_cef(sd, ed)
                         elif o == "FMI":
-                            # <--- AQUÍ ESTÁ EL FMI
                             df = load_discursos_fmi(sd, ed)
                         elif o == "PBoC (China)":
                             df = load_data_pboc(sd, ed)
-                        # Busca esta parte y déjala así:
-                        elif o == "BdE (España)":  # <--- Asegúrate que diga exactamente "BdE (España)"
+                        elif o == "BdE (España)":
                             df = load_data_bde(sd, ed)
 
                     elif tipo_doc == "Reportes":
@@ -3084,7 +3232,6 @@ elif modo_app == "Categorías":
                         elif o == "BM":
                             df = load_investigacion_bm(sd, ed)
                             
-                        # 👇 ¡AQUÍ ESTÁ EL QUE FALTABA! 👇
                         elif o == "FMI": 
                             df_blogs, df_wp = pd.DataFrame(), pd.DataFrame()
                             try: df_blogs = load_investigacion_fmi(sd, ed)
@@ -3150,7 +3297,7 @@ elif modo_app == "Categorías":
                 st.download_button(
                     "📄 Descargar en Word", data=word_file, file_name=f"Explorador_{tipo_doc}.docx")
 
-                # --- PREPARACIÓN PARA LA VISTA PREVIA (Orden Cronológico + Columna Fecha) ---
+                # --- PREPARACIÓN PARA LA VISTA PREVIA ---
                 disp = f_df.copy()
                 disp = disp.sort_values(
                     by="Date", ascending=False)  # Orden cronológico
@@ -3160,7 +3307,6 @@ elif modo_app == "Categorías":
                     lambda x: f"[{x['Title']}]({x['Link']})", axis=1)
                 disp = disp.rename(columns={"Categoría": "Tipo de Documento"})
 
-                # Mostrar en pantalla según si se seleccionó 'Todos' o un organismo específico
                 if organismo_seleccionado == "Todos":
                     cols_vis = ["Fecha", "Tipo de Documento",
                                 "Organismo", "Nombre de Documento"]
