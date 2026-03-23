@@ -930,8 +930,90 @@ def load_reportes_bpi(start_date_str, end_date_str):
     return df
 
 # --- SECCIÓN: PUBLICACIONES INSTITUCIONALES ---
+def load_pub_inst_oei(start_date_str, end_date_str):
+    """Extractor OEI (IEO-IMF) - Versión Selenium con Buscador Recursivo"""
+    import undetected_chromedriver as uc
+    from bs4 import BeautifulSoup
+    import json
+    import time
+    from dateutil import parser
+    import datetime
 
+    # Configuración de fechas
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+    except:
+        start_date = datetime.datetime.now() - datetime.timedelta(days=365)
+        end_date = datetime.datetime.now()
 
+    url = "https://ieo.imf.org/en/publications/annual-reports"
+    options = uc.ChromeOptions()
+    options.add_argument('--headless')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    # Si usas Linux/Streamlit Cloud, descomenta la siguiente línea:
+    # options.binary_location = '/usr/bin/chromium'
+
+    rows = []
+    driver = None
+    
+    try:
+        driver = uc.Chrome(options=options)
+        driver.get(url)
+        time.sleep(6) # Tiempo para hidratación de JS
+        
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        script_tag = soup.find('script', id='__NEXT_DATA__')
+        
+        if script_tag:
+            data = json.loads(script_tag.string)
+            
+            # --- BUSCADOR RECURSIVO ---
+            def encontrar_resultados(obj):
+                if isinstance(obj, dict):
+                    if 'reports' in obj and isinstance(obj['reports'], dict) and 'results' in obj['reports']:
+                        return obj['reports']['results']
+                    for v in obj.values():
+                        res = encontrar_resultados(v)
+                        if res: return res
+                elif isinstance(obj, list):
+                    for item in obj:
+                        res = encontrar_resultados(item)
+                        if res: return res
+                return None
+
+            results = encontrar_resultados(data)
+            
+            if results:
+                for item in results:
+                    titulo = item.get('title', {}).get('jsonValue', {}).get('value', '')
+                    fecha_raw = item.get('publicationDate', {}).get('jsonValue', {}).get('value', '')
+                    
+                    # Link (PDF > URL)
+                    l_val = item.get('completedReportLink', {}).get('jsonValue', {}).get('value', {})
+                    link = l_val.get('href', '') if isinstance(l_val, dict) else ""
+                    if not link:
+                        link = item.get('url', {}).get('url', '')
+                    
+                    if link and link.startswith('/'):
+                        link = "https://ieo.imf.org" + link
+                    
+                    if titulo and fecha_raw:
+                        p_date = parser.parse(fecha_raw).replace(tzinfo=None)
+                        if start_date <= p_date <= end_date:
+                            rows.append({
+                                "Date": p_date,
+                                "Title": titulo,
+                                "Link": link,
+                                "Organismo": "OEI"
+                            })
+    except Exception as e:
+        print(f"Error Selenium OEI: {e}")
+    finally:
+        if driver: driver.quit()
+
+    return pd.DataFrame(rows).sort_values("Date", ascending=False)
 @st.cache_data(show_spinner=False)
 def load_pub_inst_cef(start_date_str, end_date_str):
     url = "https://www.fsb.org/publications/key-regular-publications/"
@@ -3050,6 +3132,8 @@ if modo_app == "Boletín":
                         df = load_pub_inst_cef(sd, ed)
                     elif org == "BM":
                         df = load_pub_inst_bm(sd, ed)
+                    elif org == "OEI": 
+                        df = load_pub_inst_oei(sd, ed)
                     elif org == "FMI":
                         # 1. SSG - JSON Estático (WEO, Fiscal Monitor)
                         df_flagships = load_pub_inst_fmi(sd, ed)
@@ -3331,6 +3415,7 @@ elif modo_app == "Categorías":
                             df = load_pub_inst_bpi(sd, ed)
                         elif o == "CEF":
                             df = load_pub_inst_cef(sd, ed)
+                        elif o == "OEI": df = load_pub_inst_oei(sd, ed)
                         elif o == "BM":
                             df = load_pub_inst_bm(sd, ed)
                         elif o == "FMI":
