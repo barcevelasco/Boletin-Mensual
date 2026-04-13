@@ -2366,6 +2366,122 @@ def load_working_papers_fmi(start_date_str, end_date_str):
     print(f"📊 FMI Working Papers - Total final: {len(df)}")
     return df
 
+@st.cache_data(show_spinner=False)
+def load_investigacion_fmi(start_date_str, end_date_str):
+    """Extractor FMI - Blogs de Investigación (Vía Coveo API) - Versión mejorada"""
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 FMI Blogs - Rango solicitado: {start_date.date()} a {end_date.date()}")
+    except Exception as e:
+        print(f"⚠️ Error en fechas: {e}")
+        start_date = datetime.datetime(2000, 1, 1)
+        end_date = datetime.datetime.now()
+        print(f"📅 Usando rango por defecto: {start_date.date()} a {end_date.date()}")
+
+    rows = []
+    url = "https://imfproduction561s308u.org.coveo.com/rest/search/v2?organizationId=imfproduction561s308u"
+    
+    headers = {
+        "Authorization": "Bearer xx742a6c66-f427-4f5a-ae1e-770dc7264e8a",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Origin": "https://www.imf.org",
+        "Referer": "https://www.imf.org/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    payload = {
+        "aq": "@imftype==\"IMF Blog Page\" AND @syslanguage==\"English\"",
+        "numberOfResults": 250,  # Aumentado para capturar más
+        "sortCriteria": "@imfdate descending"
+    }
+
+    try:
+        print("📡 Solicitando blogs a la API de Coveo...")
+        res = requests.post(url, headers=headers, json=payload, timeout=15, verify=False)
+        
+        if res.status_code == 200:
+            data = res.json()
+            total_api = data.get('totalCount', 0)
+            print(f"✅ Total de blogs en la API: {total_api}")
+            
+            documentos_filtrados = 0
+            for item in data.get("results", []):
+                titulo = item.get("title", "").strip()
+                link = item.get("clickUri", "")
+                
+                # === MEJORA: Extraer fecha de múltiples formatos ===
+                parsed_date = None
+                raw_data = item.get("raw", {})
+                
+                # Formato 1: timestamp en milisegundos (el más común)
+                raw_date = raw_data.get("date")
+                if raw_date:
+                    try:
+                        parsed_date = datetime.datetime.fromtimestamp(raw_date / 1000.0)
+                    except:
+                        pass
+                
+                # Formato 2: fecha como string ISO
+                if not parsed_date:
+                    date_str = raw_data.get("date") or raw_data.get("publisheddate") or raw_data.get("publicationdate")
+                    if date_str and isinstance(date_str, str):
+                        try:
+                            parsed_date = parser.parse(date_str)
+                        except:
+                            pass
+                
+                # Formato 3: intentar con cualquier campo que parezca fecha
+                if not parsed_date:
+                    for key in ['date', 'publisheddate', 'publicationdate', 'createddate', 'lastmodified']:
+                        val = raw_data.get(key)
+                        if val:
+                            try:
+                                if isinstance(val, (int, float)):
+                                    parsed_date = datetime.datetime.fromtimestamp(val / 1000.0)
+                                elif isinstance(val, str):
+                                    parsed_date = parser.parse(val)
+                                if parsed_date:
+                                    break
+                            except:
+                                continue
+                
+                if not titulo or not link or not parsed_date:
+                    continue
+                
+                # Depuración: mostrar las fechas que se están procesando
+                print(f"   📅 Procesando: {parsed_date.strftime('%Y-%m-%d')} - {titulo[:50]}...")
+                
+                # Filtrar por el rango de fechas
+                if start_date <= parsed_date <= end_date:
+                    if not any(r['Link'] == link for r in rows):
+                        rows.append({
+                            "Date": parsed_date, 
+                            "Title": titulo, 
+                            "Link": link, 
+                            "Organismo": "FMI"
+                        })
+                        documentos_filtrados += 1
+                        print(f"      ✅ AGREGADO: {parsed_date.strftime('%Y-%m-%d')}")
+            
+            print(f"\n📊 Total de blogs en el rango {start_date.date()} a {end_date.date()}: {documentos_filtrados}")
+            
+        else:
+            print(f"❌ Error en la API: {res.status_code}")
+            
+    except Exception as e:
+        print(f"❌ Error en load_investigacion_fmi: {e}")
+        import traceback
+        traceback.print_exc()
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date", ascending=False)
+        df = df.drop_duplicates(subset=['Link'])
+    
+    return df
 
 @st.cache_data(show_spinner=False)
 def load_investigacion_bm(start_date_str, end_date_str):
