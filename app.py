@@ -2562,6 +2562,168 @@ def load_investigacion_bm(start_date_str, end_date_str):
         if df["Date"].dt.tz is not None: df["Date"] = df["Date"].dt.tz_convert(None)
         df = df.sort_values("Date", ascending=False)
     return df
+
+## OCDE - INVESTIGACION
+
+@st.cache_data(show_spinner=False)
+def load_investigacion_ocde(start_date_str, end_date_str):
+    """Extractor OCDE - Working Papers (API oficial con paginación)"""
+    import requests
+    import datetime
+    import re
+    from dateutil import parser
+    
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 OCDE Investigación: {start_date.date()} a {end_date.date()}")
+    except:
+        start_date = datetime.datetime(2000, 1, 1)
+        end_date = datetime.datetime.now()
+    
+    rows = []
+    
+    # API base de la OCDE
+    base_url = "https://api.oecd.org/webcms/search/faceted-search"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json"
+    }
+    
+    page = 0
+    page_size = 50  # Número de resultados por página
+    max_pages = 10  # Límite de seguridad (500 documentos máximo)
+    documentos_procesados = 0
+    
+    print("📡 Solicitando Working Papers a la API de la OCDE (con paginación)...")
+    
+    try:
+        while page < max_pages:
+            params = {
+                "siteName": "oecd",
+                "interfaceLanguage": "en",
+                "orderBy": "mostRecent",
+                "pageSize": page_size,
+                "page": page,
+                "facets": "oecd-languages:en",
+                "hiddenFacets": "oecd-content-types:publications/working-papers"
+            }
+            
+            print(f"   📄 Procesando página {page + 1}...")
+            response = requests.get(base_url, params=params, headers=headers, timeout=15)
+            
+            if response.status_code != 200:
+                print(f"   ❌ Error en página {page + 1}: {response.status_code}")
+                break
+            
+            data = response.json()
+            
+            # Buscar los resultados
+            results = []
+            if "results" in data:
+                results = data["results"]
+            else:
+                print(f"   ⚠️ Estructura inesperada en página {page + 1}")
+                break
+            
+            if not results:
+                print(f"   📭 No hay más resultados en página {page + 1}")
+                break
+            
+            # Contar cuántos documentos del mes encontramos en esta página
+            documentos_en_pagina = 0
+            fecha_mas_reciente = None
+            fecha_mas_antigua = None
+            
+            for item in results:
+                titulo = item.get("title", "") or item.get("name", "")
+                link = item.get("url", "") or item.get("link", "")
+                
+                if not titulo or not link:
+                    continue
+                
+                # Extraer fecha del campo publicationDateTime
+                fecha_texto = item.get("publicationDateTime", "")
+                
+                parsed_date = None
+                if fecha_texto:
+                    try:
+                        parsed_date = parser.parse(fecha_texto)
+                        if parsed_date.tzinfo is not None:
+                            parsed_date = parsed_date.replace(tzinfo=None)
+                    except:
+                        continue
+                
+                if not parsed_date:
+                    continue
+                
+                # Actualizar fechas extremas
+                if fecha_mas_reciente is None or parsed_date > fecha_mas_reciente:
+                    fecha_mas_reciente = parsed_date
+                if fecha_mas_antigua is None or parsed_date < fecha_mas_antigua:
+                    fecha_mas_antigua = parsed_date
+                
+                # Si el documento es más antiguo que start_date, podemos parar porque
+                # los resultados están ordenados por fecha descendente
+                if parsed_date < start_date:
+                    # Ya no hay más documentos del mes en esta página ni en las siguientes
+                    print(f"   ⏹️ Documento más antiguo que {start_date.strftime('%Y-%m')}, deteniendo paginación")
+                    # Salimos del while principal
+                    page = max_pages
+                    break
+                
+                # Filtrar por rango de fechas
+                if parsed_date >= start_date and parsed_date <= end_date:
+                    # Limpiar título
+                    titulo = re.sub(r'\s+', ' ', titulo).strip()
+                    
+                    # Asegurar URL absoluta
+                    if link.startswith('/'):
+                        link = f"https://www.oecd.org{link}"
+                    
+                    rows.append({
+                        "Date": parsed_date,
+                        "Title": titulo,
+                        "Link": link,
+                        "Organismo": "OCDE"
+                    })
+                    documentos_en_pagina += 1
+                    documentos_procesados += 1
+            
+            print(f"   📊 Página {page + 1}: {documentos_en_pagina} documentos en el rango")
+            
+            # Si no encontramos documentos en esta página y ya pasamos la fecha límite, paramos
+            if documentos_en_pagina == 0 and fecha_mas_antigua and fecha_mas_antigua < start_date:
+                print(f"   ⏹️ Fin de resultados para el mes solicitado")
+                break
+            
+            # Si encontramos menos de page_size documentos, probablemente es la última página
+            if len(results) < page_size:
+                print(f"   📭 Última página alcanzada")
+                break
+            
+            page += 1
+            # Pequeña pausa para no sobrecargar la API
+            time.sleep(0.3)
+        
+        print(f"\n📊 Total documentos OCDE encontrados: {documentos_procesados}")
+        
+    except Exception as e:
+        print(f"❌ Error en load_investigacion_ocde: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date", ascending=False)
+        df = df.drop_duplicates(subset=['Link'])
+    
+    print(f"📊 OCDE Investigación - Total final: {len(df)}")
+    return df
+
+
 # --- SECCIÓN: DISCURSOS ---
 @st.cache_data(show_spinner=False)
 def load_data_ecb(start_date_str, end_date_str):
