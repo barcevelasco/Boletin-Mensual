@@ -1183,6 +1183,145 @@ def load_pub_inst_ocde(start_date_str, end_date_str):
     print(f"📊 OCDE Pub. Institucionales - Total final: {len(df)}")
     return df
 
+# --- Publicaciones Institucionales --- OEI 
+@st.cache_data(show_spinner=False)
+def load_pub_inst_oei(start_date_str, end_date_str):
+    """Extractor OEI (IEO-IMF) - Versión API Next.js con headers completos"""
+    import requests
+    import datetime
+    import re
+    from dateutil import parser
+    
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 OEI: {start_date.date()} a {end_date.date()}")
+    except:
+        start_date = datetime.datetime(2000, 1, 1)
+        end_date = datetime.datetime.now()
+    
+    rows = []
+    
+    # Intentar obtener el build ID dinámicamente desde la página HTML
+    build_id = "qchYZivFKVMGvRneSTtnM"  # Fallback
+    try:
+        headers_browser = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+        }
+        res = requests.get("https://ieo.imf.org/en/Publications/annual-reports", headers=headers_browser, timeout=15)
+        # Buscar el build ID en el HTML
+        match = re.search(r'/_next/data/([a-zA-Z0-9]+)/en/publications/annual-reports\.json', res.text)
+        if match:
+            build_id = match.group(1)
+            print(f"🔧 Build ID encontrado: {build_id}")
+    except Exception as e:
+        print(f"⚠️ Usando build ID por defecto: {build_id}")
+    
+    # URL del JSON
+    url = f"https://ieo.imf.org/_next/data/{build_id}/en/publications/annual-reports.json"
+    
+    # Headers completos para simular un navegador real
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://ieo.imf.org/en/Publications/annual-reports',
+        'Origin': 'https://ieo.imf.org',
+        'Connection': 'keep-alive',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+    }
+    
+    try:
+        print(f"📡 Consultando: {url}")
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # ✅ RUTA CORRECTA según el JSON que analizamos
+            try:
+                # Los reportes están en componentProps.[id].fields.datasource.reports.results
+                component_props = data.get('pageProps', {}).get('componentProps', {})
+                
+                # Buscar el componente ReportsListing
+                reports_results = None
+                for comp_id, comp_value in component_props.items():
+                    if 'fields' in comp_value and 'datasource' in comp_value['fields']:
+                        datasource = comp_value['fields']['datasource']
+                        if 'reports' in datasource and 'results' in datasource['reports']:
+                            reports_results = datasource['reports']['results']
+                            print(f"✅ Componente encontrado: {comp_id}")
+                            break
+                
+                if not reports_results:
+                    print("⚠️ No se encontraron reportes en componentProps")
+                    return pd.DataFrame()
+                
+                print(f"📚 Reportes encontrados: {len(reports_results)}")
+                
+                for report in reports_results:
+                    # Extraer título
+                    titulo = report.get('title', {}).get('jsonValue', {}).get('value', '')
+                    
+                    # Extraer fecha
+                    fecha_texto = report.get('publicationDate', {}).get('jsonValue', {}).get('value', '')
+                    
+                    # Extraer link del PDF
+                    completed_link = report.get('completedReportLink', {}).get('jsonValue', {}).get('value', {})
+                    link = completed_link.get('href', '') if isinstance(completed_link, dict) else ''
+                    
+                    if not titulo or not fecha_texto:
+                        continue
+                    
+                    # Parsear fecha
+                    parsed_date = parser.parse(fecha_texto).replace(tzinfo=None)
+                    
+                    if parsed_date < start_date or parsed_date > end_date:
+                        continue
+                    
+                    rows.append({
+                        "Date": parsed_date,
+                        "Title": titulo,
+                        "Link": link,
+                        "Organismo": "OEI"
+                    })
+                    print(f"   ✅ {parsed_date.strftime('%Y-%m-%d')}: {titulo}")
+                
+            except Exception as e:
+                print(f"   ⚠️ Error procesando el JSON: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"❌ Error en la API: {response.status_code}")
+            print(f"   Respuesta: {response.text[:200] if response.text else 'Vacía'}")
+            
+    except Exception as e:
+        print(f"❌ Error en load_pub_inst_oei: {e}")
+    
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date", ascending=False)
+        df = df.drop_duplicates(subset=['Link'])
+    
+    print(f"📊 OEI - Total documentos: {len(df)}")
+    return df
+
 # ========== FUNCIÓN PARA CEMLA (PUBLICACIONES INSTITUCIONALES) ==========
 @st.cache_data(show_spinner=False)
 def load_pub_inst_cemla(start_date_str, end_date_str):
