@@ -4398,34 +4398,104 @@ elif modo_app == "Categorías":
                         elif o == "BM": df = load_data_bm(sd, ed)
                         elif o == "BoC (Canadá)": df = load_data_boc(sd, ed)
                         elif o == "BoJ (Japón)": df = load_data_boj(sd, ed)
+                        elif o == "BoE (Inglaterra)": df = load_discursos_boe(sd, ed)
+                        elif o == "CEMLA": 
+                            print("🔴🔴🔴 LLAMANDO A CEMLA INVESTIGACIÓN 🔴🔴🔴")
+                            df = load_investigacion_cemla(sd, ed)
+                            print(f"🔴🔴🔴 RESULTADO CEMLA: {len(df)} documentos 🔴🔴🔴")
                         elif o == "CEF": df = load_data_cef(sd, ed)
+                        elif o == "FMI":
+                            df = load_discursos_fmi(sd, ed)
                         elif o == "PBoC (China)": df = load_data_pboc(sd, ed)
+                        elif o == "BdE (España)":
+                            df = load_data_bde(sd, ed)
                     
                     elif tipo_doc == "Reportes":
-                        if o == "BID": df = load_reportes_bid_en(sd, ed)
+                        if o == "BID": 
+                            dfs_bid = []
+                            try:
+                                dfs_bid.append(load_reportes_bid(sd, ed))
+                            except:
+                                pass
+                            try:
+                                dfs_bid.append(load_reportes_bid_en(sd, ed))
+                            except:
+                                pass
+                            dfs_bid = [d for d in dfs_bid if not d.empty]
+                            if dfs_bid:
+                                df = pd.concat(dfs_bid, ignore_index=True).drop_duplicates(
+                                    subset=['Link'])
                         elif o == "BM": df = load_reportes_bm(sd, ed) # <--- AGRÉGALO AQUÍ
                         elif o == "BPI": df = load_reportes_bpi(sd, ed)
                         elif o == "CEF": df = load_reportes_cef(sd, ed)
                         elif o == "OCDE": df = load_reportes_ocde(sd, ed)
+                        elif o == "FEM": df = load_reportes_fem(sd, ed)
                         
                     elif tipo_doc == "Investigación":
-                        if o == "BPI": df = load_investigacion_bpi(sd, ed)
+                        if o == "BID":
+                            df = load_investigacion_bid_unified(sd, ed)
+                        elif o == "BPI": df = load_investigacion_bpi(sd, ed)
                         elif o == "BM": df = load_investigacion_bm(sd, ed)
+                        elif o == "CEMLA":   # <-- ESTA LÍNEA DEBE EXISTIR
+                            print("🔴 LLAMANDO A CEMLA")
+                            df = load_investigacion_cemla(sd, ed)
+                        elif o == "FMI": 
+                            df_blogs, df_wp = pd.DataFrame(), pd.DataFrame()
+                            try: df_blogs = load_investigacion_fmi(sd, ed)
+                            except: pass
+                            try: df_wp = load_working_papers_fmi(sd, ed)
+                            except: pass
+                            
+                            dfs_fmi = [d for d in [df_blogs, df_wp] if not d.empty]
+                            if dfs_fmi:
+                                df = pd.concat(dfs_fmi, ignore_index=True).drop_duplicates(subset=['Link']).sort_values("Date", ascending=False)
+                        elif o == "OCDE":
+                            df = load_investigacion_ocde(sd, ed)
                         
                     elif tipo_doc == "Publicaciones Institucionales":
-                        if o == "BPI": df = load_pub_inst_bpi(sd, ed)
-                        elif o == "CEF": df = load_pub_inst_cef(sd, ed)
-                        elif o == "BM": df = load_pub_inst_bm(sd, ed)
-                        elif o == "FMI": 
-                            # Extraemos ambas fuentes de datos para el FMI
-                            df_flagships = load_pub_inst_fmi(sd, ed)
-                            df_prs = load_press_releases_fmi(sd, ed)
+                        if o == "BPI": 
+                            df = load_pub_inst_bpi(sd, ed)
+                        elif o == "CEF": 
+                            df = load_pub_inst_cef(sd, ed)
+                        elif o == "OEI": 
+                            df = load_pub_inst_oei(sd, ed)
+                        elif o == "OCDE":
+                            df = load_pub_inst_ocde(sd, ed)
+                        elif o == "BM": 
+                            df = load_pub_inst_bm(sd, ed)
+                        elif o == "CEMLA":
+                            df = load_pub_inst_cemla(sd, ed)
+                        elif o == "FMI":
+                            print(f"\n{'='*50}")
+                            print(f"🔍 CATEGORÍAS - Procesando FMI para {m_sel} {a_sel}")
+                            print(f"   Fechas: {sd} a {ed}")
+                            print(f"{'='*50}")
                             
-                            # Juntamos las tablas de forma segura
-                            dfs_a_unir = [d for d in [df_flagships, df_prs] if not d.empty]
+                            # 1. F&D Magazine (agregar explícitamente)
+                            df_fandd = load_pub_inst_fandd(sd, ed)
+                            print(f"   📊 F&D Magazine: {len(df_fandd)} documentos")
+
+                            # 2. SSG - JSON Estático (WEO, Fiscal Monitor)
+                            df_flagships = load_pub_inst_fmi(sd, ed)
+                            print(f"   📊 Flagships: {len(df_flagships)} documentos")
+                            
+                            # 3. SSG - JSON Estático (Comunicados)
+                            df_prs = load_press_releases_fmi(sd, ed)
+                            print(f"   📊 Press Releases: {len(df_prs)} documentos")
+                            
+                            # 4. CSR API - Coveo (Country Reports)
+                            df_crs = load_country_reports_fmi(sd, ed)
+                            print(f"   📊 Country Reports: {len(df_crs)} documentos")
+                            
+                            # Unir todos
+                            print(f"🔍 CATEGORÍAS - Flagships: {len(df_flagships)}, PRs: {len(df_prs)}, CRs: {len(df_crs)}")
+                            dfs_a_unir = [d for d in [df_fandd, df_flagships, df_prs, df_crs] if not d.empty]
                             if dfs_a_unir:
                                 df = pd.concat(dfs_a_unir, ignore_index=True)
                                 df = df.sort_values("Date", ascending=False)
+                                print(f"   📊 TOTAL combinado FMI: {len(df)} documentos")
+                            else:
+                                print(f"   ⚠️ Ninguna fuente retornó datos")
                         
                 except Exception as e:
                     pass
@@ -4445,6 +4515,27 @@ elif modo_app == "Categorías":
                 f_df = pd.concat(dfs_comb, ignore_index=True)              
                 # --- FORMATO HOMOGÉNEO (IGUAL AL BOLETÍN) ---
                 f_df['Categoría'] = tipo_doc
+
+                # ========== ELIMINACIÓN DE DUPLICADOS ==========
+                print(f"📊 Total antes de desduplicar: {len(f_df)}")
+
+                # 1. Eliminar duplicados exactos por Link
+                f_df = f_df.drop_duplicates(subset=['Link'], keep='first')
+                print(f"   Después de eliminar duplicados por Link: {len(f_df)}")
+
+                # 2. Normalizar títulos para comparación
+                f_df['Title_Norm'] = f_df['Title'].str.lower().str.replace(r'[^\w\s]', '', regex=True).str.replace(r'\s+', ' ', regex=True).str.strip()
+
+                # 3. Eliminar duplicados por título normalizado (mismo título en diferentes categorías)
+                f_df = f_df.sort_values('Date', ascending=False).drop_duplicates(subset=['Title_Norm'], keep='first')
+                print(f"   Después de eliminar duplicados por título: {len(f_df)}")
+
+                # 4. Eliminar columna temporal
+                f_df = f_df.drop(columns=['Title_Norm'])
+
+                print(f"📊 Total después de desduplicación: {len(f_df)}")
+
+                # --- PREPARACIÓN PARA EL WORD (Orden Institucional) ---
                 if tipo_doc == "Discursos":
                     f_df = f_df.sort_values(by=["Title"], ascending=[True])
                 else:
