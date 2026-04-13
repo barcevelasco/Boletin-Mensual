@@ -2236,8 +2236,137 @@ def load_pub_inst_bm(start_date_str, end_date_str):
         if df["Date"].dt.tz is not None: df["Date"] = df["Date"].dt.tz_convert(None)
         df = df.sort_values("Date", ascending=False)
     return df
-    
+
+
+
     # --- SECCIÓN: INVESTIGACIÓN ---
+## - Working Papers - FMI
+@st.cache_data(show_spinner=False)
+def load_working_papers_fmi(start_date_str, end_date_str):
+    """
+    Extractor FMI - Working Papers usando Crossref API
+    Los Working Papers del FMI tienen DOIs con prefix 10.5089
+    """
+    import requests
+    import datetime
+    import re
+    from dateutil import parser
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 FMI Working Papers (Crossref API): {start_date.date()} a {end_date.date()}")
+    except:
+        start_date = datetime.datetime(2000, 1, 1)
+        end_date = datetime.datetime.now()
+
+    rows = []
+    
+    # API de Crossref
+    url = "https://api.crossref.org/works"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json"
+    }
+    
+    # Parámetros de búsqueda
+    params = {
+        "filter": f"from-pub-date:{start_date.strftime('%Y-%m-%d')},until-pub-date:{end_date.strftime('%Y-%m-%d')},prefix:10.5089",
+        "rows": 100,
+        "sort": "published-online",
+        "order": "desc"
+    }
+    
+    try:
+        print(f"📡 Solicitando DOIs del FMI a Crossref API...")
+        
+        response = requests.get(url, headers=headers, params=params, timeout=30, verify=False)
+        
+        print(f"   Status Code: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            items = data.get('message', {}).get('items', [])
+            
+            print(f"📚 Documentos encontrados en Crossref: {len(items)}")
+            
+            for item in items:
+                # Extraer título
+                titulo = item.get('title', [''])[0] if item.get('title') else ''
+                if not titulo:
+                    continue
+                
+                # Extraer DOI
+                doi = item.get('DOI', '')
+                if not doi:
+                    continue
+                
+                # Construir URL del DOI
+                link = f"https://doi.org/{doi}"
+                
+                # Extraer fecha
+                pub_date = item.get('published-print', {}) or item.get('published-online', {})
+                date_parts = pub_date.get('date-parts', [[]])[0]
+                
+                parsed_date = None
+                if len(date_parts) >= 3:
+                    try:
+                        parsed_date = datetime.datetime(date_parts[0], date_parts[1], date_parts[2])
+                    except:
+                        pass
+                elif len(date_parts) >= 2:
+                    try:
+                        parsed_date = datetime.datetime(date_parts[0], date_parts[1], 1)
+                    except:
+                        pass
+                
+                if not parsed_date:
+                    continue
+                
+                # Verificar que sea Working Paper
+                container = item.get('container-title', [''])[0] if item.get('container-title') else ''
+                is_working_paper = 'working paper' in container.lower() or 'imf working' in container.lower()
+                
+                if not is_working_paper:
+                    is_working_paper = 'working paper' in titulo.lower()
+                
+                if not is_working_paper:
+                    continue
+                
+                if "coming soon" in titulo.lower():
+                    continue
+                
+                if start_date <= parsed_date <= end_date:
+                    if not any(r['Link'] == link for r in rows):
+                        rows.append({
+                            "Date": parsed_date,
+                            "Title": titulo,
+                            "Link": link,
+                            "Organismo": "FMI"
+                        })
+                        print(f"   ✅ {parsed_date.strftime('%Y-%m-%d')}: {titulo[:60]}...")
+                        
+        else:
+            print(f"❌ Error en Crossref API: {response.status_code}")
+            
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date", ascending=False)
+        df = df.drop_duplicates(subset=['Link'])
+    
+    print(f"📊 FMI Working Papers - Total final: {len(df)}")
+    return df
+
+
 @st.cache_data(show_spinner=False)
 def load_investigacion_bm(start_date_str, end_date_str):
     """Extractor para Investigación del BM (Filtra y excluye los que son 'Reports')"""
