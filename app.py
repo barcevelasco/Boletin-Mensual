@@ -3221,6 +3221,245 @@ def load_data_cef(start_date_str, end_date_str):
         df = df.sort_values("Date", ascending=False)
     return df
 
+## - Discursos - Banco de España - 
+@st.cache_data(show_spinner=False)
+def load_data_bde(start_date_str, end_date_str):
+    """Extractor Banco de España - Versión con extracción de nombres reales desde PDF"""
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from PyPDF2 import PdfReader
+    import io
+    import requests
+    import datetime
+    import time
+    import re
+
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 BdE (España): {start_date.date()} a {end_date.date()}")
+    except:
+        start_date = datetime.datetime(2025, 1, 1)
+        end_date = datetime.datetime.now()
+
+    rows = []
+    url = "https://www.bde.es/wbe/en/noticias-eventos/actualidad-banco-espana/intervenciones-publicas/"
+    
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080")
+    
+    def extraer_autor_y_cargo_desde_pdf(pdf_url):
+        """Extrae el nombre y cargo del autor desde el PDF"""
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            response = requests.get(pdf_url, headers=headers, timeout=15)
+            if response.status_code != 200:
+                return None, None
+            
+            pdf_file = io.BytesIO(response.content)
+            reader = PdfReader(pdf_file)
+            
+            text = ""
+            for i in range(min(3, len(reader.pages))):
+                page_text = reader.pages[i].extract_text()
+                if page_text:
+                    text += page_text + "\n"
+            
+            if not text:
+                return None, None
+            
+            lineas = text.split('\n')
+            nombre = None
+            cargo = None
+            
+            for i, linea in enumerate(lineas):
+                linea_limpia = linea.strip()
+                
+                if re.search(r'Governor|Gobernador', linea_limpia, re.IGNORECASE):
+                    cargo = "Governor"
+                    if i > 0 and lineas[i-1].strip() and len(lineas[i-1].strip().split()) >= 2:
+                        nombre = lineas[i-1].strip()
+                    elif i + 1 < len(lineas) and lineas[i+1].strip() and len(lineas[i+1].strip().split()) >= 2:
+                        nombre = lineas[i+1].strip()
+                    break
+                elif re.search(r'Deputy Governor|Subgobernador', linea_limpia, re.IGNORECASE):
+                    cargo = "Deputy Governor"
+                    if i > 0 and lineas[i-1].strip() and len(lineas[i-1].strip().split()) >= 2:
+                        nombre = lineas[i-1].strip()
+                    elif i + 1 < len(lineas) and lineas[i+1].strip() and len(lineas[i+1].strip().split()) >= 2:
+                        nombre = lineas[i+1].strip()
+                    break
+                elif re.search(r'Subgobernadora', linea_limpia, re.IGNORECASE):
+                    cargo = "Subgobernadora"
+                    if i > 0 and lineas[i-1].strip() and len(lineas[i-1].strip().split()) >= 2:
+                        nombre = lineas[i-1].strip()
+                    elif i + 1 < len(lineas) and lineas[i+1].strip() and len(lineas[i+1].strip().split()) >= 2:
+                        nombre = lineas[i+1].strip()
+                    break
+                elif re.search(r'D\.G\.|Director General', linea_limpia, re.IGNORECASE):
+                    cargo = "Director General"
+                    if i > 0 and lineas[i-1].strip() and len(lineas[i-1].strip().split()) >= 2:
+                        nombre = lineas[i-1].strip()
+                    elif i + 1 < len(lineas) and lineas[i+1].strip() and len(lineas[i+1].strip().split()) >= 2:
+                        nombre = lineas[i+1].strip()
+                    break
+            
+            if not nombre:
+                for linea in lineas[:15]:
+                    linea_limpia = linea.strip()
+                    if re.match(r'^[A-ZÁÉÍÓÚÑ]{2,}(?:\s+[A-ZÁÉÍÓÚÑ]{2,}){1,3}$', linea_limpia):
+                        if not any(palabra in linea_limpia for palabra in ['DIRECTOR', 'GENERAL', 'DEPARTAMENTO', 'SECRETARÍA', 'MINISTERIO', 'GOBIERNO', 'BANCO', 'ESPAÑA', 'MADRID']):
+                            nombre = linea_limpia
+                            break
+            
+            if nombre:
+                nombre = ' '.join(nombre.split())
+                nombre = nombre.title()
+                nombre = re.sub(r'\bDe\b', 'de', nombre)
+                nombre = re.sub(r'\bY\b', 'y', nombre)
+                return nombre, cargo
+            
+            return None, None
+            
+        except Exception as e:
+            print(f"      ⚠️ Error extrayendo del PDF: {e}")
+            return None, None
+
+    try:
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.get(url)
+        time.sleep(8)
+
+        js_script = """
+        let data = [];
+        let results = document.querySelectorAll('.block-search-result, .block-search-result--image');
+        results.forEach(el => {
+            let titleEl = el.querySelector('.block-search-result__title, a');
+            let dateEl = el.querySelector('.block-search-result__date');
+            let linkEl = el.querySelector('a');
+            if (titleEl && dateEl && linkEl) {
+                data.push({
+                    title: titleEl.innerText,
+                    dateText: dateEl.innerText,
+                    link: linkEl.href
+                });
+            }
+        });
+        return data;
+        """
+        extracted = driver.execute_script(js_script)
+        driver.quit()
+
+        print(f"   📚 Discursos encontrados: {len(extracted)}")
+
+        for idx, item in enumerate(extracted):
+            raw_title = item['title'].strip()
+            raw_date_str = item['dateText'].strip()
+            page_link = item['link']
+            
+            if not raw_title or not raw_date_str:
+                continue
+
+            parsed_date = None
+            try:
+                parsed_date = datetime.datetime.strptime(raw_date_str, '%d/%m/%Y')
+            except:
+                match = re.search(r'(\d{2}/\d{2}/\d{4})', raw_date_str)
+                if match:
+                    parsed_date = datetime.datetime.strptime(match.group(1), '%d/%m/%Y')
+
+            if parsed_date and start_date <= parsed_date <= end_date:
+                print(f"   🔍 Procesando ({idx+1}/{len(extracted)}): {parsed_date.strftime('%Y-%m-%d')}")
+                
+                try:
+                    page_response = requests.get(page_link, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+                    if page_response.status_code == 200:
+                        from bs4 import BeautifulSoup
+                        soup = BeautifulSoup(page_response.text, 'html.parser')
+                        pdf_link = None
+                        for a in soup.find_all('a', href=True):
+                            if a['href'].endswith('.pdf'):
+                                pdf_link = a['href']
+                                if pdf_link.startswith('/'):
+                                    pdf_link = "https://www.bde.es" + pdf_link
+                                break
+                        
+                        if pdf_link:
+                            print(f"      📄 PDF encontrado, extrayendo autor...")
+                            autor, cargo = extraer_autor_y_cargo_desde_pdf(pdf_link)
+                            # Dentro de load_data_bde(), después de encontrar el autor
+                            if autor:
+                                titulo_limpio = raw_title
+                                
+                                # ========== NUEVA LIMPIEZA MEJORADA ==========
+                                # Eliminar patrones comunes de cargo (en español e inglés)
+                                patrones_cargo = [
+                                    r'D\.G\.\s*Econom[íi]a\.\s*',      # D.G. Economía. o D.G. Economics.
+                                    r'D\.G\.\s*Economics\.\s*',         # D.G. Economics.
+                                    r'Deputy\s*Governor\.\s*',          # Deputy Governor.
+                                    r'Governor\.\s*',                   # Governor.
+                                    r'Subgobernador[a]?\.\s*',          # Subgobernadora. o Subgobernador.
+                                    r'Director\s*General\.\s*',         # Director General.
+                                    r'Head\s*of\s*\w+\.\s*',            # Head of Department.
+                                    r'Director\.\s*',                   # Director.
+                                    r'Chief\s*Economist\.\s*',          # Chief Economist.
+                                    r'Gerente\s*General\.\s*',          # Gerente General.
+                                    r'Vicepresident[ae]\.\s*',          # Vicepresidenta. o Vicepresidente.
+                                    r'President[ae]\.\s*',              # Presidenta. o Presidente.
+                                ]
+                                
+                                for patron in patrones_cargo:
+                                    titulo_limpio = re.sub(patron, '', titulo_limpio, flags=re.IGNORECASE)
+                                
+                                # También eliminar cualquier texto entre paréntesis que parezca un cargo
+                                titulo_limpio = re.sub(r'\s*\([^)]*(?:D\.G\.|Governor|Director|Econom[íi]a)[^)]*\)\s*', ' ', titulo_limpio, flags=re.IGNORECASE)
+                                
+                                # Limpiar espacios múltiples y puntos al inicio
+                                titulo_limpio = re.sub(r'\s+', ' ', titulo_limpio).strip()
+                                titulo_limpio = re.sub(r'^\.\s*', '', titulo_limpio)
+                                
+                                # Construir título final
+                                titulo_final = f"{autor}: {titulo_limpio}"
+                                
+                                # Limpieza adicional: eliminar " : " si el título está vacío
+                                titulo_final = re.sub(r':\s*$', '', titulo_final)
+                                
+                                print(f"      📝 Título limpio: {titulo_final[:80]}...")
+                            
+                            else:
+                                print(f"      ⚠️ No se pudo extraer autor, usando formato estándar")
+                                titulo_final = re.sub(r'\.\s+', ': ', raw_title, count=1)
+                                titulo_final = re.sub(r'\s+', ' ', titulo_final).strip()
+                    else:
+                        titulo_final = re.sub(r'\.\s+', ': ', raw_title, count=1)
+                        
+                except Exception as e:
+                    print(f"      ⚠️ Error accediendo a la página: {e}")
+                    titulo_final = re.sub(r'\.\s+', ': ', raw_title, count=1)
+                
+                if not any(r['Link'] == page_link for r in rows):
+                    rows.append({
+                        "Date": parsed_date,
+                        "Title": titulo_final,
+                        "Link": page_link,
+                        "Organismo": "BdE (España)"
+                    })
+                    print(f"      ✅ Agregado: {titulo_final[:80]}...")
+
+    except Exception as e:
+        print(f"❌ Error BDE: {e}")
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date", ascending=False)
+    
+    print(f"📊 BdE (España) - Total final: {len(df)}")
+    return df
+
 # ==========================================
 # NUEVAS FUNCIONES PARA BID (bypass Cloudflare)
 # ==========================================
