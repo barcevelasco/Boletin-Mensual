@@ -842,56 +842,151 @@ def load_reportes_cef(start_date_str, end_date_str):
         df = df.sort_values("Date", ascending=False)
     return df
 
+## Reportes OCDE 
 @st.cache_data(show_spinner=False)
 def load_reportes_ocde(start_date_str, end_date_str):
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    rows = []
-    try: start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
-    except: start_date = datetime.datetime(2000, 1, 1)
-    year = start_date.year
-    chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
+    """Extractor OCDE - Reports (API oficial)"""
+    import requests
+    import datetime
+    import re
+    import time
+    from dateutil import parser
+
     try:
-        driver = webdriver.Chrome(options=chrome_options)
-        url = f"https://www.oecd.org/en/search/publications.html?orderBy=mostRecent&page=0&facetTags=oecd-content-types%3Apublications%2Freports%2Coecd-languages%3Aen&minPublicationYear={year}&maxPublicationYear={year}"
-        driver.get(url)
-        time.sleep(12) 
-        js_script = """
-        let linksData = [];
-        function findLinks(root) {
-            let els = root.querySelectorAll('*');
-            els.forEach(el => {
-                if (el.shadowRoot) findLinks(el.shadowRoot);
-                if (el.tagName === 'A' && el.href) {
-                    let text = el.innerText || el.textContent;
-                    let aria = el.getAttribute('aria-label') || el.getAttribute('title') || '';
-                    let final_text = text.trim() ? text.trim() : aria.trim();
-                    if(final_text.length > 15) { linksData.push({ title: final_text, link: el.href }); }
-                }
-            });
-        }
-        findLinks(document); return linksData;
-        """
-        extracted_links = driver.execute_script(js_script)
-        driver.quit()
-        for item in extracted_links:
-            href = item['link'].lower()
-            title = item['title'].replace('\n', ' ')
-            firmas_validas = ['/publications/', '/reports/', 'oecd-ilibrary.org', '/books/']
-            if any(firma in href for firma in firmas_validas):
-                if any(basura in title.lower() for x in ['download', 'read more', 'pdf', 'buy', 'search', 'subscribe']): continue
-                if not any(r['Link'] == item['link'] for r in rows):
-                    rows.append({"Date": start_date, "Title": title, "Link": item['link'], "Organismo": "OCDE"})
-    except: pass
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 OCDE Reportes: {start_date.date()} a {end_date.date()}")
+    except:
+        start_date = datetime.datetime(2000, 1, 1)
+        end_date = datetime.datetime.now()
+
+    rows = []
+
+    # API base de la OCDE
+    base_url = "https://api.oecd.org/webcms/search/faceted-search"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json"
+    }
+
+    page = 0
+    page_size = 50  # Número de resultados por página
+    max_pages = 10  # Límite de seguridad
+    documentos_procesados = 0
+
+    print("📡 Solicitando Reportes a la API de la OCDE (con paginación)...")
+
+    try:
+        while page < max_pages:
+            # Parámetros para buscar Reports en inglés
+            params = {
+                "siteName": "oecd",
+                "interfaceLanguage": "en",
+                "orderBy": "mostRecent",
+                "pageSize": page_size,
+                "page": page,
+                "facets": "oecd-languages:en",
+                "hiddenFacets": "oecd-content-types:publications/reports"  # <-- FILTRO PARA REPORTES
+            }
+
+            print(f"   📄 Procesando página {page + 1}...")
+            response = requests.get(base_url, params=params, headers=headers, timeout=15)
+
+            if response.status_code != 200:
+                print(f"   ❌ Error en página {page + 1}: {response.status_code}")
+                break
+
+            data = response.json()
+
+            # Buscar los resultados
+            results = data.get("results", [])
+
+            if not results:
+                print(f"   📭 No hay más resultados en página {page + 1}")
+                break
+
+            documentos_en_pagina = 0
+            fecha_mas_antigua = None
+
+            for item in results:
+                titulo = item.get("title", "") or item.get("name", "")
+                link = item.get("url", "") or item.get("link", "")
+
+                if not titulo or not link:
+                    continue
+
+                # Extraer fecha
+                fecha_texto = item.get("publicationDateTime", "")
+                parsed_date = None
+                if fecha_texto:
+                    try:
+                        parsed_date = parser.parse(fecha_texto)
+                        if parsed_date.tzinfo is not None:
+                            parsed_date = parsed_date.replace(tzinfo=None)
+                    except:
+                        continue
+
+                if not parsed_date:
+                    continue
+
+                fecha_mas_antigua = parsed_date
+
+                # Si el documento es más antiguo que start_date, paramos
+                if parsed_date < start_date:
+                    print(f"   ⏹️ Documento más antiguo que {start_date.strftime('%Y-%m')}, deteniendo paginación")
+                    page = max_pages
+                    break
+
+                # Filtrar por rango de fechas
+                if parsed_date >= start_date and parsed_date <= end_date:
+                    # Limpiar título
+                    titulo = re.sub(r'\s+', ' ', titulo).strip()
+
+                    # Asegurar URL absoluta
+                    if link.startswith('/'):
+                        link = f"https://www.oecd.org{link}"
+
+                    rows.append({
+                        "Date": parsed_date,
+                        "Title": titulo,
+                        "Link": link,
+                        "Organismo": "OCDE"
+                    })
+                    documentos_en_pagina += 1
+                    documentos_procesados += 1
+
+            print(f"   📊 Página {page + 1}: {documentos_en_pagina} documentos en el rango")
+
+            # Si no encontramos documentos en esta página y ya pasamos la fecha límite
+            if documentos_en_pagina == 0 and fecha_mas_antigua and fecha_mas_antigua < start_date:
+                print(f"   ⏹️ Fin de resultados para el mes solicitado")
+                break
+
+            # Si encontramos menos de page_size documentos, probablemente es la última página
+            if len(results) < page_size:
+                print(f"   📭 Última página alcanzada")
+                break
+
+            page += 1
+            time.sleep(0.3)  # Pequeña pausa para no sobrecargar la API
+
+        print(f"\n📊 Total Reportes OCDE encontrados: {documentos_procesados}")
+
+    except Exception as e:
+        print(f"❌ Error en load_reportes_ocde: {e}")
+        import traceback
+        traceback.print_exc()
+
     df = pd.DataFrame(rows)
     if not df.empty:
         df["Date"] = pd.to_datetime(df["Date"])
         df = df.sort_values("Date", ascending=False)
-    return df
+        df = df.drop_duplicates(subset=['Link'])
 
+    print(f"📊 OCDE Reportes - Total final: {len(df)}")
+    return df
+    
 
 @st.cache_data(show_spinner=False)
 def load_reportes_bpi(start_date_str, end_date_str):
