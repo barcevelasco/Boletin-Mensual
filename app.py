@@ -1700,6 +1700,95 @@ def load_pub_inst_cef(start_date_str, end_date_str):
         df = df.sort_values("Date", ascending=False)
     return df
 
+# ========== FUNCIÓN UNIVERSAL PARA NOTICIAS DEL FMI (API COVEO) ==========
+@st.cache_data(show_spinner=False)
+def load_fmi_news_all(start_date_str, end_date_str):
+    """
+    Extrae TODAS las noticias del FMI usando la API de Coveo.
+    Incluye Press Releases, Mission Concluding, Statements, News Articles, etc.
+    """
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 FMI News (API Coveo): {start_date.date()} a {end_date.date()}")
+    except:
+        start_date = datetime.datetime(2000, 1, 1)
+        end_date = datetime.datetime.now()
+        print(f"⚠️ Error en fechas, usando rango por defecto")
+
+    rows = []
+    url = "https://imfproduction561s308u.org.coveo.com/rest/search/v2?organizationId=imfproduction561s308u"
+
+    headers = {
+        "Authorization": "Bearer xx742a6c66-f427-4f5a-ae1e-770dc7264e8a",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Origin": "https://www.imf.org",
+        "Referer": "https://www.imf.org/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    # Filtro para capturar TODO excepto discursos
+    payload = {
+        "aq": "@imftype==(\"News Article\",\"Press Release\",\"Communique\",\"Mission Concluding Statement\",\"News Brief\",\"Public Information Notice\",\"Statements at Donor Meeting\",\"Views and Commentaries\",\"Blog Page\",\"IMF Staff Country Reports\") AND NOT @imftype==(\"Speech\",\"Transcript\") AND @syslanguage==\"English\"",
+        "numberOfResults": 300,
+        "sortCriteria": "@imfdate descending"
+    }
+
+    try:
+        print("📡 Solicitando noticias del FMI a la API de Coveo...")
+        # Deshabilitar verificación SSL para evitar errores locales
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        res = requests.post(url, headers=headers, json=payload, timeout=15, verify=False)
+
+        if res.status_code == 200:
+            data = res.json()
+            print(f"✅ Respuesta recibida. Total en API: {data.get('totalCount', 0)} resultados")
+
+            for item in data.get("results", []):
+                titulo = item.get("title", "").strip()
+                link = item.get("clickUri", "")
+                content_type = item.get("raw", {}).get("imftype", "Unknown")
+
+                raw_date = item.get("raw", {}).get("date")
+                parsed_date = None
+                if raw_date:
+                    try:
+                        parsed_date = datetime.datetime.fromtimestamp(raw_date / 1000.0)
+                    except:
+                        pass
+
+                if not titulo or not link or not parsed_date:
+                    continue
+
+                if start_date <= parsed_date <= end_date:
+                    if not any(r['Link'] == link for r in rows):
+                        rows.append({
+                            "Date": parsed_date,
+                            "Title": titulo,
+                            "Link": link,
+                            "Organismo": "FMI"
+                        })
+                        print(f"   ✅ [{content_type[:25]}] {parsed_date.strftime('%Y-%m-%d')}: {titulo[:60]}...")
+        else:
+            print(f"❌ Error en la API: {res.status_code}")
+            print(f"   Respuesta: {res.text[:200]}")
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date", ascending=False)
+        print(f"\n✅ TOTAL FMI News (API): {len(df)} documentos")
+    else:
+        print("⚠️ No se encontraron documentos")
+
+    return df
+
+# -- BPI -- Publicaciones Institucionales 
 @st.cache_data(show_spinner=False)
 def load_pub_inst_bpi(start_date_str, end_date_str):
     urls_api = ["https://www.bis.org/api/document_lists/annualeconomicreports.json", "https://www.bis.org/api/document_lists/quarterlyreviews.json"]
