@@ -420,7 +420,158 @@ def load_reportes_bid_en(start_date_str, end_date_str):
     print(f"✅ BID Reportes - Total: {len(df)} documentos")
     return df
 
-# --- SECCIÓN: REPORTES ---
+## Reportes BM
+@st.cache_data(show_spinner=False)
+def load_reportes_bm(start_date_str, end_date_str):
+    """
+    Extractor para Reportes del BM usando API de DSpace
+    """
+    base_url = "https://openknowledge.worldbank.org/server/api/discover/search/objects"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+
+    # ID exacto de la comunidad de Publicaciones
+    scope_id = '06251f8a-62c2-59fb-add5-ec0993fc20d9'
+
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 BM Reportes: {start_date.date()} a {end_date.date()}")
+    except:
+        start_date = datetime.datetime(2000, 1, 1)
+        end_date = datetime.datetime.now()
+
+    # Palabras clave para identificar reportes (ampliadas)
+    palabras_reporte = [
+        r'\breport\b', r'\boutlook\b', r'\bprospects\b', r'\bupdate\b',
+        r'\breview\b', r'\bmonitor\b', r'\bbulletin\b', r'\boverview\b',
+        r'\bassessment\b', r'\banalysis\b', r'\bforecast\b', r'\btrends?\b',
+        r'\bdevelopments?\b', r'\bglobal economic\b', r'\bcommodity markets\b',
+        r'\beconomic\s+report\b', r'\bcountry\s+update\b', r'\bquarterly\b',
+        r'\bannual\s+report\b', r'\bglobal\s+development\b', r'\bmacroeconomic\b',
+        r'\bfiscal\s+update\b', r'\bpolicy\s+note\b', r'\bworking\s+paper\b',
+        r'\bdiscussion\s+paper\b', r'\bpolicy\s+research\s+working\s+paper\b'
+    ]
+
+    rows = []
+    page = 0
+    max_pages = 10  # Aumentado para capturar más
+    
+    while page < max_pages:
+        try:
+            # Aumentar size a 50 para capturar más por página
+            params = {
+                'scope': scope_id,
+                'sort': 'dc.date.issued,DESC',
+                'page': page,
+                'size': 50
+            }
+            res = requests.get(base_url, headers=headers, params=params, timeout=15)
+            data = res.json()
+
+            objects = data.get('_embedded', {}).get(
+                'searchResult', {}).get('_embedded', {}).get('objects', [])
+            
+            if not objects:
+                print(f"📭 No hay más resultados en página {page}")
+                break
+
+            print(f"📄 Página {page + 1}: {len(objects)} objetos encontrados")
+            
+            items_found = 0
+            for obj in objects:
+                item = obj.get('_embedded', {}).get('indexableObject', {})
+                meta = item.get('metadata', {})
+
+                # Extraer Título
+                title = meta.get('dc.title', [{'value': ''}])[0].get('value', '')
+                if not title:
+                    continue
+                
+                # Extraer Fecha
+                date_s = meta.get('dc.date.issued', [{'value': ''}])[0].get('value', '')
+                if not date_s:
+                    continue
+                    
+                try:
+                    parsed_date = parser.parse(date_s)
+                    if parsed_date.tzinfo is not None:
+                        parsed_date = parsed_date.replace(tzinfo=None)
+                except:
+                    continue
+
+                if parsed_date < start_date or parsed_date > end_date:
+                    continue
+                
+                # Revisión de resultados 
+                print(f"   📄 {parsed_date.date()} - {title[:80]}...")
+
+                # ========== FILTRO MEJORADO ==========
+                es_reporte = False
+                
+                # 1. Revisar título
+                for palabra in palabras_reporte:
+                    if re.search(palabra, title.lower()):
+                        es_reporte = True
+                        break
+                
+                # 2. Si no está en título, revisar descripción
+                if not es_reporte:
+                    abstract_list = meta.get('dc.description.abstract', [])
+                    desc_list = meta.get('dc.description', [])
+                    description = ""
+                    if abstract_list:
+                        description = abstract_list[0].get('value', '').lower()
+                    elif desc_list:
+                        description = desc_list[0].get('value', '').lower()
+                    
+                    for palabra in palabras_reporte:
+                        if re.search(palabra, description):
+                            es_reporte = True
+                            break
+                
+                # 3. Si no es reporte, saltar
+                #if not es_reporte:
+                #    continue
+                # ==================================(ESTE COMMENT evita que filtre innecesariamente todo el listado disponible)
+
+                # Link permanente
+                link = meta.get('dc.identifier.uri', [{'value': ''}])[0].get('value', '')
+                if not link:
+                    link = f"https://openknowledge.worldbank.org/entities/publication/{item.get('id', '')}"
+
+                if not any(r['Link'] == link for r in rows):
+                    rows.append({
+                        "Date": parsed_date, 
+                        "Title": title,
+                        "Link": link, 
+                        "Organismo": "BM"
+                    })
+                    items_found += 1
+                    print(f"   ✅ {parsed_date.date()} - {title[:60]}...")
+
+            print(f"   📊 Documentos en página {page + 1}: {items_found}")
+            
+            # Si no encontramos nada en 2 páginas consecutivas, paramos
+            if items_found == 0 and page > 1:
+                break
+                
+            page += 1
+            time.sleep(0.5)
+            
+        except Exception as e:
+            print(f"⚠️ Error en página {page}: {e}")
+            break
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date", ascending=False)
+        df = df.drop_duplicates(subset=['Link'])
+    
+    print(f"✅ BM Reportes - Total: {len(df)} documentos")
+    return df
+
+
 @st.cache_data(show_spinner=False)
 def load_reportes_bpi(start_date_str, end_date_str):
     urls_api = [
