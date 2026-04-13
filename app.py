@@ -1041,6 +1041,151 @@ def load_reportes_bpi(start_date_str, end_date_str):
 
 # --- SECCIÓN: PUBLICACIONES INSTITUCIONALES ---
 @st.cache_data(show_spinner=False)
+def load_pub_inst_ocde(start_date_str, end_date_str):
+    """Extractor OCDE - Publicaciones Institucionales (API oficial)"""
+    import requests
+    import datetime
+    import re
+    import time
+    from dateutil import parser
+    
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 OCDE Pub. Institucionales: {start_date.date()} a {end_date.date()}")
+    except:
+        start_date = datetime.datetime(2000, 1, 1)
+        end_date = datetime.datetime.now()
+    
+    rows = []
+    
+    # API base de la OCDE
+    base_url = "https://api.oecd.org/webcms/search/faceted-search"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json"
+    }
+    
+    page = 0
+    page_size = 50
+    max_pages = 10
+    
+    print("📡 Solicitando Publicaciones Institucionales a la API de la OCDE (con paginación)...")
+    
+    try:
+        while page < max_pages:
+            # Parámetros para buscar el sub-tema psi114
+            params = {
+                "siteName": "oecd",
+                "interfaceLanguage": "en",
+                "orderBy": "mostRecent",
+                "pageSize": page_size,
+                "page": page,
+                "facets": "oecd-languages:en",
+                "hiddenFacets": "oecd-policy-subissues:psi114"  # <-- FILTRO PARA PUB. INSTITUCIONALES
+            }
+            
+            print(f"   📄 Procesando página {page + 1}...")
+            response = requests.get(base_url, params=params, headers=headers, timeout=15)
+            
+            if response.status_code != 200:
+                print(f"   ❌ Error en página {page + 1}: {response.status_code}")
+                break
+            
+            data = response.json()
+            
+            # Buscar los resultados
+            results = data.get("results", [])
+            
+            if not results:
+                print(f"   📭 No hay más resultados en página {page + 1}")
+                break
+            
+            documentos_en_pagina = 0
+            fecha_mas_antigua = None
+            
+            for item in results:
+                titulo = item.get("title", "") or item.get("name", "")
+                link = item.get("url", "") or item.get("link", "")
+                
+                if not titulo or not link:
+                    continue
+                
+                # Extraer fecha
+                fecha_texto = item.get("publicationDateTime", "")
+                
+                parsed_date = None
+                if fecha_texto:
+                    try:
+                        parsed_date = parser.parse(fecha_texto)
+                        if parsed_date.tzinfo is not None:
+                            parsed_date = parsed_date.replace(tzinfo=None)
+                    except:
+                        continue
+                
+                if not parsed_date:
+                    continue
+                
+                fecha_mas_antigua = parsed_date
+                
+                # Si el documento es más antiguo que start_date, paramos
+                if parsed_date < start_date:
+                    print(f"   ⏹️ Documento más antiguo que {start_date.strftime('%Y-%m')}, deteniendo paginación")
+                    page = max_pages
+                    break
+                
+                # Filtrar por rango de fechas
+                if parsed_date >= start_date and parsed_date <= end_date:
+                    # Limpiar título
+                    titulo = re.sub(r'\s+', ' ', titulo).strip()
+                    
+                    # Asegurar URL absoluta
+                    if link.startswith('/'):
+                        link = f"https://www.oecd.org{link}"
+                    
+                    rows.append({
+                        "Date": parsed_date,
+                        "Title": titulo,
+                        "Link": link,
+                        "Organismo": "OCDE"
+                    })
+                    documentos_en_pagina += 1
+            
+            print(f"   📊 Página {page + 1}: {documentos_en_pagina} documentos en el rango")
+            
+            # Si no encontramos documentos en esta página y ya pasamos la fecha límite
+            if documentos_en_pagina == 0 and fecha_mas_antigua and fecha_mas_antigua < start_date:
+                print(f"   ⏹️ Fin de resultados para el mes solicitado")
+                break
+            
+            # Si encontramos menos de page_size documentos, probablemente es la última página
+            if len(results) < page_size:
+                print(f"   📭 Última página alcanzada")
+                break
+            
+            page += 1
+            time.sleep(0.3)
+        
+        print(f"\n📊 Total documentos OCDE Pub. Institucionales encontrados: {len(rows)}")
+        
+    except Exception as e:
+        print(f"❌ Error en load_pub_inst_ocde: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date", ascending=False)
+        df = df.drop_duplicates(subset=['Link'])
+    
+    print(f"📊 OCDE Pub. Institucionales - Total final: {len(df)}")
+    return df
+
+
+
+@st.cache_data(show_spinner=False)
 def load_pub_inst_cef(start_date_str, end_date_str):
     url = "https://www.fsb.org/publications/key-regular-publications/"
     headers = {'User-Agent': 'Mozilla/5.0'}
