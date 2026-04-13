@@ -2885,6 +2885,149 @@ def load_investigacion_ocde(start_date_str, end_date_str):
     print(f"📊 OCDE Investigación - Total final: {len(df)}")
     return df
 
+## -- FMI - Discursos 
+@st.cache_data(show_spinner=False)
+def load_discursos_fmi(start_date_str, end_date_str):
+    """Extractor FMI - Discursos y Transcripts (Coveo API + Scraping Blindado)"""
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+    except:
+        start_date = datetime.datetime(2000, 1, 1)
+        end_date = datetime.datetime.now()
+
+    rows = []
+    url = "https://imfproduction561s308u.org.coveo.com/rest/search/v2?organizationId=imfproduction561s308u"
+    headers = {
+        "Authorization": "Bearer xx742a6c66-f427-4f5a-ae1e-770dc7264e8a",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Origin": "https://www.imf.org",
+        "Referer": "https://www.imf.org/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    payload = {
+        "aq": "@imftype==(\"Speech\",\"Transcript\") AND @syslanguage==\"English\"",
+        "numberOfResults": 150,
+        "sortCriteria": "@imfdate descending"
+    }
+
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=15)
+        if res.status_code == 200:
+            data = res.json()
+            for item in data.get("results", []):
+                titulo_raw = item.get("title", "").strip()
+                link = item.get("clickUri", "")
+                raw_data = item.get("raw", {})
+                raw_date = raw_data.get("date")
+
+                parsed_date = None
+                if raw_date:
+                    try:
+                        parsed_date = datetime.datetime.fromtimestamp(
+                            raw_date / 1000.0)
+                    except:
+                        pass
+                if not titulo_raw or not link or not parsed_date:
+                    continue
+
+                # SOLO procesamos el documento si está en el rango de fechas para ahorrar tiempo
+                if start_date <= parsed_date <= end_date:
+                    if not any(r['Link'] == link for r in rows):
+
+                        # 1. Autor oficial de la etiqueta API
+                        autor = raw_data.get("imfspeaker", "")
+                        if isinstance(autor, list) and len(autor) > 0:
+                            autor = autor[0]
+
+                        # 2. CAZADOR BLINDADO (Si la API viene vacía, visitamos el link)
+                        if not autor:
+                            try:
+                                link_req = link if link.startswith(
+                                    'http') else "https://www.imf.org" + link
+                                art_res = requests.get(
+                                    link_req, headers=headers, timeout=10)
+
+                                # TRITURADORA: Reemplazamos cualquier etiqueta HTML (<p>, <em>, <strong>) por un espacio
+                                art_text = re.sub(
+                                    r'<[^>]+>', ' ', art_res.text)
+                                # Colapsamos múltiples espacios y saltos de línea en uno solo
+                                art_text = re.sub(r'\s+', ' ', art_text)
+
+                                # Buscamos "Speakers: Nombre" deteniéndonos en la coma o en su cargo
+                                match_speaker = re.search(
+                                    r'(?:Speakers?|Participants?)\s*:\s*([A-ZÀ-ÿ][A-Za-zÀ-ÿ\s\.\'-]{3,40}?)\s*(?:,|-|–|—|Director|Managing|Deputy|Senior|Head|Minister|Secretary)', art_text, re.IGNORECASE)
+                                if match_speaker:
+                                    autor = match_speaker.group(1).strip()
+                            except Exception as e:
+                                pass
+
+                        # Limpiamos el nombre encontrado y cortamos si hay dos personas (ej: "Kristalina and Nigel")
+                        if autor:
+                            autor = re.split(
+                                r'\s+and\s+|\s*&\s*', autor, flags=re.IGNORECASE)[0].strip()
+                            autor = clean_author_name(autor)
+
+                        # =========================================================
+                        # LIMPIEZA ESTÉTICA
+                        # =========================================================
+                        titulo_limpio = titulo_raw
+
+                        # Quitar sufijos (Ej: - Keynote Speech)
+                        patron_sufijo = re.compile(
+                            r"(?i)\s*[\-–—]\s*.*?\b(speech|remarks|statement|address|transcript|keynote)\b\s+by\s+.*$")
+                        titulo_limpio = patron_sufijo.sub(
+                            "", titulo_limpio).strip().strip('"').strip("'").strip()
+
+                        # Quitar prefijos de Transcripts (Ej: Press Briefing Transcript:)
+                        patron_prefijo = re.compile(
+                            r"(?i)^(Press Briefing Transcript|Transcript of Press Briefing|Transcript)\s*[:\-]\s*")
+                        titulo_limpio = patron_prefijo.sub(
+                            "", titulo_limpio).strip()
+
+                        # Transformar "Remarks by Autor, ..."
+                        patron_remarks = re.compile(
+                            r"(?i)^(remarks|speech|statement|address)\s+by\s+([^,:]+)[,\-]?\s*")
+                        match_remarks = patron_remarks.match(titulo_limpio)
+                        if match_remarks:
+                            autor_detectado = clean_author_name(
+                                match_remarks.group(2))
+                            if not autor:
+                                autor = autor_detectado
+                            titulo_limpio = patron_remarks.sub(
+                                f"{autor}: ", titulo_limpio)
+
+                        # Inyectar Autor Final
+                        if autor:
+                            if titulo_limpio.lower().startswith(f"{autor.lower()},"):
+                                titulo_final = re.sub(
+                                    rf"(?i)^{re.escape(autor)},", f"{autor}:", titulo_limpio)
+                            elif titulo_limpio.lower().startswith(f"{autor.lower()}:"):
+                                titulo_final = titulo_limpio
+                            elif titulo_limpio.lower().startswith(autor.lower()):
+                                titulo_final = re.sub(
+                                    rf"(?i)^{re.escape(autor)}\s*", f"{autor}: ", titulo_limpio)
+                            elif autor.lower() not in titulo_limpio.lower():
+                                titulo_final = f"{autor}: {titulo_limpio}"
+                            else:
+                                titulo_final = titulo_limpio
+                        else:
+                            titulo_final = titulo_limpio
+                        # =========================================================
+
+                        rows.append(
+                            {"Date": parsed_date, "Title": titulo_final, "Link": link, "Organismo": "FMI"})
+    except:
+        pass
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date", ascending=False)
+    return df
+
 
 # --- SECCIÓN: DISCURSOS ---
 @st.cache_data(show_spinner=False)
