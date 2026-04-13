@@ -14,6 +14,10 @@ import calendar
 import time
 import re
 from dateutil import parser
+import urllib.parse
+import cloudscraper
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
 # CONFIGURACIÓN INICIAL Y ESTILOS
@@ -77,6 +81,190 @@ def clean_author_name(name):
     if not name:
         return ""
     cleaned = name.strip().title()
+    cleaned = re.sub(r'\b([A-Z])\.\s*([A-Z])', lambda m: f"{m.group(1)}. {m.group(2)}", cleaned)
+    return cleaned
+
+# ==========================================
+# HERRAMIENTA DE RESCATE (TEXTO MANUAL)
+# ==========================================
+@st.cache_data(show_spinner=False)
+def buscar_link_inteligente(titulo, organismo):
+    """Cazador de DOIs de Doble Impacto (Estricto + Fuzzy). Cero Google."""
+    import urllib.parse
+    import requests
+    import time
+    import re
+
+    # 1. Limpieza base
+    titulo_raiz = re.split(r'[:\-]', titulo)[0].strip()
+    titulo_limpio = re.sub(r'[^a-zA-Z0-9\s]', '', titulo_raiz)
+    
+    headers = {'User-Agent': 'mailto:bot_investigacion@banco.com'}
+    time.sleep(0.5) 
+
+    def consultar_api(query_param, texto_busqueda, modo_estricto=True):
+        query_enc = urllib.parse.quote(texto_busqueda)
+        url = f"https://api.crossref.org/works?{query_param}={query_enc}&select=URL,title,publisher&rows=4"
+        
+        try:
+            res = requests.get(url, headers=headers, timeout=8)
+            if res.status_code == 200:
+                items = res.json().get('message', {}).get('items', [])
+                
+                for item in items:
+                    url_oficial = item.get('URL')
+                    if not url_oficial: continue
+                        
+                    pub = item.get('publisher', '').lower()
+                    titulo_api = item.get('title', [''])[0].lower()
+                    
+                    if modo_estricto:
+                        if 'oecd' in pub or 'organisation' in pub or organismo.lower() in pub:
+                            return url_oficial
+                    else:
+                        titulo_comparar = titulo_limpio.lower()
+                        if titulo_comparar in titulo_api or titulo_api in titulo_comparar:
+                            return url_oficial
+        except:
+            pass
+        return None
+
+    link = consultar_api("query.title", titulo_limpio, modo_estricto=True)
+    if link: return link
+
+    time.sleep(0.5)
+    link = consultar_api("query.bibliographic", titulo, modo_estricto=False)
+    if link: return link
+
+    return ""
+
+def procesar_texto_pegado(texto_crudo, organismo_nombre):
+    """Extrae Fecha y Título del texto pegado. Retorna DataFrame estandarizado."""
+    rows = []
+    lineas = [linea.strip() for linea in texto_crudo.split('\n') if linea.strip()]
+    patron_fecha = r'(\d{1,2}\s+[A-Za-z]{3,}\s+\d{4})'
+    
+    i = 0
+    while i < len(lineas):
+        match_fecha = re.search(patron_fecha, lineas[i])
+        if match_fecha:
+            try:
+                parsed_date = parser.parse(match_fecha.group(1))
+            except:
+                i += 1; continue
+            
+            titulo = ""
+            if i >= 1:
+                titulo = lineas[i-1]
+                basura_menu = ['list view', 'grid view', 'z-a', 'a-z', 'oldest', 'most recent', 'most relevant', 'order by']
+                if titulo.lower() in basura_menu and i >= 2: 
+                    titulo = lineas[i-2]
+            
+            if titulo and len(titulo) > 10 and not any(b in titulo.lower() for b in ['search', 'filter', 'sort by', 'publications']):
+                rows.append({
+                    "Date": parsed_date, 
+                    "Title": titulo,
+                    "Link": "Pendiente",
+                    "Organismo": organismo_nombre
+                })
+        i += 1
+        
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(by="Date", ascending=False).drop_duplicates(subset=['Title'])
+    return df
+
+def buscar_link_boe(titulo):
+    """Busca silenciosamente en la web para obtener el Link Directo y Oficial del BoE"""
+    import urllib.parse
+    import requests
+    from bs4 import BeautifulSoup
+    import re
+    
+    # Extraemos solo el título limpio sin el autor para la búsqueda
+    titulo_limpio = titulo.split(': ')[-1] if ': ' in titulo else titulo
+    titulo_limpio = re.sub(r'[^a-zA-Z0-9\s]', '', titulo_limpio)
+    
+    # Usamos DuckDuckGo HTML para evadir bloqueos y obtener el link oficial sin usar Google
+    query = f"site:bankofengland.co.uk/speech {titulo_limpio}"
+    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=8)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # Atrapamos el link real de los resultados
+        for a in soup.find_all('a', class_='result__url'):
+            href = a.get('href', '').strip()
+            if 'bankofengland.co.uk/speech' in href:
+                if not href.startswith('http'):
+                    href = 'https://' + href
+                return href
+    except:
+        pass
+        
+    # Fallback de emergencia (1 clic)
+    google_query = urllib.parse.quote(query)
+    return f"https://www.google.com/search?q={google_query}"
+
+def procesar_texto_pegado_boe(texto_crudo):
+    """Extractor especializado para el formato del Bank of England (BoE)"""
+    rows = []
+    lineas = [linea.strip() for linea in texto_crudo.split('\n') if linea.strip()]
+    patron_fecha = r'(\d{1,2}\s+[A-Za-z]{3,}\s+\d{4})'
+    
+    i = 0
+    while i < len(lineas):
+        match_fecha = re.search(patron_fecha, lineas[i])
+        if match_fecha:
+            try:
+                parsed_date = parser.parse(match_fecha.group(1))
+            except:
+                i += 1; continue
+            
+            # 1. Buscar Autor un renglón ARRIBA (ej. "Speech // Phil Evans")
+            autor = ""
+            if i >= 1 and "//" in lineas[i-1]:
+                partes = lineas[i-1].split("//")
+                if len(partes) > 1:
+                    autor = clean_author_name(partes[1].strip())
+            
+            # 2. Buscar Título Completo dos renglones ABAJO
+            titulo = ""
+            if i + 2 < len(lineas):
+                titulo_raw = lineas[i+2]
+                # Le quitamos el sufijo redundante " - speech by Autor"
+                titulo_raw = re.sub(r'(?i)\s*[\-–—]\s*speech\s+by\s+.*$', '', titulo_raw).strip()
+                titulo = titulo_raw
+            
+            # 3. Ensamblar y Guardar
+            if titulo:
+                titulo_final = f"{autor}: {titulo}" if autor else titulo
+                rows.append({
+                    "Date": parsed_date, 
+                    "Title": titulo_final,
+                    "Link": "Pendiente",
+                    "Organismo": "BoE (Inglaterra)"
+                })
+        i += 1
+        
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(by="Date", ascending=False).drop_duplicates(subset=['Title'])
+    return df
+def clean_author_name(name):
+    if not name: return ""
+    minusc = ['de', 'van', 'von', 'der', 'del', 'la']
+    words = name.strip().split()
+    
+    # Capitaliza todo excepto las preposiciones europeas
+    cleaned_words = [w.capitalize() if w.lower() not in minusc else w.lower() for w in words]
+    if cleaned_words:
+        cleaned_words[0] = cleaned_words[0].capitalize() # La primera siempre mayúscula
+        
+    cleaned = " ".join(cleaned_words)
+    # Arreglar iniciales pegadas (ej. "J.M. Keynes" -> "J. M. Keynes")
     cleaned = re.sub(r'\b([A-Z])\.\s*([A-Z])', lambda m: f"{m.group(1)}. {m.group(2)}", cleaned)
     return cleaned
 
