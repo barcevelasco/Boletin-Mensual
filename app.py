@@ -2366,6 +2366,168 @@ def load_working_papers_fmi(start_date_str, end_date_str):
     print(f"📊 FMI Working Papers - Total final: {len(df)}")
     return df
 
+# ========== INVESTIGACIÓN CEMLA (Latin American Journal of Central Banking) ==========
+@st.cache_data(show_spinner=False)
+def load_investigacion_cemla(start_date_str, end_date_str):
+    """
+    Extractor CEMLA - Latin American Journal of Central Banking
+    Extrae fecha COMPLETA (con día) si está disponible en Crossref
+    """
+    import requests
+    import datetime
+    from dateutil import parser
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
+    print("="*60)
+    print("🔍 CEMLA INVESTIGACIÓN - Buscando fechas completas (con día)")
+    print("="*60)
+    
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 Rango: {start_date.date()} a {end_date.date()}")
+    except:
+        start_date = datetime.datetime(2000, 1, 1)
+        end_date = datetime.datetime.now()
+
+    rows = []
+    issn = "2666-1438"
+    base_url = "https://api.crossref.org/works"
+    
+    # Buscar mes por mes para tener mejor control
+    current = start_date.replace(day=1)
+    
+    while current <= end_date:
+        year = current.year
+        month = current.month
+        
+        # Último día del mes
+        if month == 12:
+            last_day = 31
+        elif month in [4, 6, 9, 11]:
+            last_day = 30
+        else:
+            last_day = 28 if year % 4 != 0 else 29
+        
+        fecha_inicio = f"{year}-{month:02d}-01"
+        fecha_fin = f"{year}-{month:02d}-{last_day}"
+        
+        print(f"\n📆 Buscando {year}-{month:02d}...")
+        
+        params = {
+            "filter": f"from-pub-date:{fecha_inicio},until-pub-date:{fecha_fin},issn:{issn}",
+            "rows": 50,
+            "sort": "published-online",
+            "order": "desc"
+        }
+        
+        try:
+            response = requests.get(base_url, params=params, timeout=30, verify=False)
+            
+            if response.status_code == 200:
+                data = response.json()
+                items = data.get('message', {}).get('items', [])
+                
+                if items:
+                    print(f"   📚 Artículos: {len(items)}")
+                    
+                    for item in items:
+                        titulo = item.get('title', [''])[0] if item.get('title') else ''
+                        doi = item.get('DOI', '')
+                        link = f"https://doi.org/{doi}" if doi else ''
+                        
+                        if not titulo or not link:
+                            continue
+                        
+                        # ========== INTENTAR OBTENER FECHA COMPLETA ==========
+                        fecha_completa = None
+                        
+                        # 1. Probar con 'published-online' (puede tener día)
+                        pub_online = item.get('published-online', {})
+                        if pub_online:
+                            date_parts = pub_online.get('date-parts', [[]])[0]
+                            if len(date_parts) >= 3:
+                                try:
+                                    fecha_completa = datetime.datetime(date_parts[0], date_parts[1], date_parts[2])
+                                    print(f"      📅 Online: {fecha_completa.strftime('%Y-%m-%d')}")
+                                except:
+                                    pass
+                        
+                        # 2. Probar con 'issued' (fecha de publicación)
+                        if not fecha_completa:
+                            issued = item.get('issued', {})
+                            if issued:
+                                date_parts = issued.get('date-parts', [[]])[0]
+                                if len(date_parts) >= 3:
+                                    try:
+                                        fecha_completa = datetime.datetime(date_parts[0], date_parts[1], date_parts[2])
+                                        print(f"      📅 Issued: {fecha_completa.strftime('%Y-%m-%d')}")
+                                    except:
+                                        pass
+                        
+                        # 3. Probar con 'posted-online'
+                        if not fecha_completa:
+                            posted = item.get('posted-online', {})
+                            if posted:
+                                date_parts = posted.get('date-parts', [[]])[0]
+                                if len(date_parts) >= 3:
+                                    try:
+                                        fecha_completa = datetime.datetime(date_parts[0], date_parts[1], date_parts[2])
+                                        print(f"      📅 Posted: {fecha_completa.strftime('%Y-%m-%d')}")
+                                    except:
+                                        pass
+                        
+                        # 4. Fallback: usar el primer día del mes (si no hay día)
+                        if not fecha_completa:
+                            fecha_completa = datetime.datetime(year, month, 1)
+                            print(f"      ⚠️ Fallback: {fecha_completa.strftime('%Y-%m-%d')} (sin día específico)")
+                        
+                        # Filtrar por rango
+                        if start_date <= fecha_completa <= end_date:
+                            rows.append({
+                                "Date": fecha_completa,
+                                "Title": titulo,
+                                "Link": link,
+                                "Organismo": "CEMLA"
+                            })
+                            print(f"      ✅ AGREGADO: {fecha_completa.strftime('%Y-%m-%d')}")
+                        else:
+                            print(f"      ⏭️ Fuera de rango: {fecha_completa.strftime('%Y-%m-%d')}")
+                            
+                else:
+                    print(f"   📭 Sin artículos")
+                    
+            else:
+                print(f"   ❌ Error: {response.status_code}")
+                
+        except Exception as e:
+            print(f"   ❌ Error: {e}")
+        
+        # Siguiente mes
+        if current.month == 12:
+            current = current.replace(year=current.year + 1, month=1)
+        else:
+            current = current.replace(month=current.month + 1)
+        
+        time.sleep(0.5)
+    
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date", ascending=False)
+        df = df.drop_duplicates(subset=['Link'])
+    
+    print(f"\n{'='*60}")
+    print(f"📊 CEMLA Investigación - Total: {len(df)} documentos")
+    if not df.empty:
+        print("\n📅 Primeros 5 documentos con sus fechas:")
+        for i, row in df.head(5).iterrows():
+            print(f"   {row['Date'].strftime('%Y-%m-%d')}: {row['Title'][:60]}...")
+    print(f"{'='*60}")
+    
+    return df
+
 @st.cache_data(show_spinner=False)
 def load_investigacion_fmi(start_date_str, end_date_str):
     """Extractor FMI - Blogs de Investigación (Vía Coveo API) - Versión mejorada"""
