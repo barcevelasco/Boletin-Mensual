@@ -260,20 +260,6 @@ def procesar_texto_pegado_boe(texto_crudo):
     if not df.empty:
         df = df.sort_values(by="Date", ascending=False).drop_duplicates(subset=['Title'])
     return df
-def clean_author_name(name):
-    if not name: return ""
-    minusc = ['de', 'van', 'von', 'der', 'del', 'la']
-    words = name.strip().split()
-    
-    # Capitaliza todo excepto las preposiciones europeas
-    cleaned_words = [w.capitalize() if w.lower() not in minusc else w.lower() for w in words]
-    if cleaned_words:
-        cleaned_words[0] = cleaned_words[0].capitalize() # La primera siempre mayúscula
-        
-    cleaned = " ".join(cleaned_words)
-    # Arreglar iniciales pegadas (ej. "J.M. Keynes" -> "J. M. Keynes")
-    cleaned = re.sub(r'\b([A-Z])\.\s*([A-Z])', lambda m: f"{m.group(1)}. {m.group(2)}", cleaned)
-    return cleaned
 
 # ==========================================
 # FUNCIONES DE EXTRACCIÓN (BACKEND)
