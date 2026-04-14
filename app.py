@@ -77,6 +77,20 @@ st.markdown("""
 # ==========================================
 # UTILIDADES DE FORMATO
 # ==========================================
+def clean_author_name(name):
+    if not name: return ""
+    minusc = ['de', 'van', 'von', 'der', 'del', 'la']
+    words = name.strip().split()
+    
+    # Capitaliza todo excepto las preposiciones europeas
+    cleaned_words = [w.capitalize() if w.lower() not in minusc else w.lower() for w in words]
+    if cleaned_words:
+        cleaned_words[0] = cleaned_words[0].capitalize() # La primera siempre mayúscula
+        
+    cleaned = " ".join(cleaned_words)
+    # Arreglar iniciales pegadas (ej. "J.M. Keynes" -> "J. M. Keynes")
+    cleaned = re.sub(r'\b([A-Z])\.\s*([A-Z])', lambda m: f"{m.group(1)}. {m.group(2)}", cleaned)
+    return cleaned
 # ==========================================
 # HERRAMIENTA DE RESCATE (TEXTO MANUAL)
 # ==========================================
@@ -848,83 +862,6 @@ def load_reportes_fem(start_date_str, end_date_str):
         df = df.sort_values("Date", ascending=False).drop_duplicates(subset=['Link'])
     return df
 
-@st.cache_data(show_spinner=False)
-def load_reportes_bm(start_date_str, end_date_str):
-    """Extractor para Reportes del BM (Solo incluye los que mencionan 'Report')"""
-    base_url = "https://openknowledge.worldbank.org/server/api/discover/search/objects"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    
-    # ID exacto de la comunidad compartida con Investigación
-    scope_id = '06251f8a-62c2-59fb-add5-ec0993fc20d9'
-    
-    try: start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
-    except: start_date = datetime.datetime(2000, 1, 1)
-    
-    rows, page = [], 0
-    while True:
-        try:
-            params = {
-                'scope': scope_id, 
-                'sort': 'dc.date.issued,DESC', 
-                'page': page, 
-                'size': 20
-            }
-            res = requests.get(base_url, headers=headers, params=params, timeout=15)
-            data = res.json()
-            
-            objects = data.get('_embedded', {}).get('searchResult', {}).get('_embedded', {}).get('objects', [])
-            if not objects: break
-            
-            items_found = 0
-            for obj in objects:
-                item = obj.get('_embedded', {}).get('indexableObject', {})
-                meta = item.get('metadata', {})
-                
-                # Extraer Título y Fecha (Sin Autor, como acordamos)
-                title = meta.get('dc.title', [{'value': ''}])[0].get('value', '')
-                date_s = meta.get('dc.date.issued', [{'value': ''}])[0].get('value', '')
-                
-                parsed_date = None
-                if date_s:
-                    try: parsed_date = parser.parse(date_s)
-                    except: pass
-                
-                if not parsed_date or parsed_date < start_date: continue
-                
-                # --- NUEVO FILTRO PRO-REPORTES ---
-                abstract_list = meta.get('dc.description.abstract', [])
-                desc_list = meta.get('dc.description', [])
-                
-                description = ""
-                if abstract_list: description = abstract_list[0].get('value', '').lower()
-                elif desc_list: description = desc_list[0].get('value', '').lower()
-                
-                # Si la palabra "report" NO está en la descripción, lo saltamos
-                if not re.search(r'\breport\b', description):
-                    continue
-                # ----------------------------------
-                
-                # Link permanente
-                link = meta.get('dc.identifier.uri', [{'value': ''}])[0].get('value', '')
-                if not link: link = f"https://openknowledge.worldbank.org/entities/publication/{item.get('id', '')}"
-                
-                if not any(r['Link'] == link for r in rows):
-                    rows.append({"Date": parsed_date, "Title": title, "Link": link, "Organismo": "BM"})
-                    items_found += 1
-            
-            if items_found == 0: break
-            page += 1
-            if page > 3: break # Límite para evitar búsquedas infinitas
-            time.sleep(0.2)
-        except:
-            break
-            
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df["Date"] = pd.to_datetime(df["Date"])
-        if df["Date"].dt.tz is not None: df["Date"] = df["Date"].dt.tz_convert(None)
-        df = df.sort_values("Date", ascending=False)
-    return df
 
 @st.cache_data(show_spinner=False)
 def load_reportes_cef(start_date_str, end_date_str):
