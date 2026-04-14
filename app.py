@@ -77,13 +77,6 @@ st.markdown("""
 # ==========================================
 # UTILIDADES DE FORMATO
 # ==========================================
-def clean_author_name(name):
-    if not name:
-        return ""
-    cleaned = name.strip().title()
-    cleaned = re.sub(r'\b([A-Z])\.\s*([A-Z])', lambda m: f"{m.group(1)}. {m.group(2)}", cleaned)
-    return cleaned
-
 # ==========================================
 # HERRAMIENTA DE RESCATE (TEXTO MANUAL)
 # ==========================================
@@ -420,6 +413,207 @@ def load_reportes_bid_en(start_date_str, end_date_str):
     print(f"✅ BID Reportes - Total: {len(df)} documentos")
     return df
 
+#Reportes - BPI - ESP -
+@st.cache_data(show_spinner=False)
+def load_reportes_bpi(start_date_str, end_date_str):
+    """
+    Extractor BPI - Reportes (BCBS, CPMI, IFC, CGFS)
+    """
+    import requests
+    import pandas as pd
+    import datetime
+    import html
+    from dateutil import parser
+    from bs4 import BeautifulSoup
+    import re
+    import time
+    
+    # Configuración de fechas
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 BPI Reportes: {start_date.date()} a {end_date.date()}")
+    except:
+        start_date = datetime.datetime(2000, 1, 1)
+        end_date = datetime.datetime.now()
+
+    # ========== 1. URLs EXISTENTES (BCBS, CPMI) ==========
+    urls_api = [
+        "https://www.bis.org/api/document_lists/bcbspubls.json",
+        "https://www.bis.org/api/document_lists/cpmi_publs.json"
+    ]
+    
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    rows = []
+
+    # API calls (BCBS y CPMI) - TU CÓDIGO EXISTENTE
+    for url in urls_api:
+        try:
+            res = requests.get(url, headers=headers, timeout=15)
+            data = res.json()
+            lista_documentos = data.get("list", {})
+            for path, doc_info in lista_documentos.items():
+                titulo = html.unescape(doc_info.get("short_title", ""))
+                if not titulo:
+                    continue
+                link = "https://www.bis.org" + doc_info.get("path", "")
+                if not link.endswith(".htm") and not link.endswith(".pdf"):
+                    link += ".htm"
+                date_str = doc_info.get("publication_start_date", "")
+                parsed_date = None
+                if date_str:
+                    try:
+                        parsed_date = parser.parse(date_str)
+                        if parsed_date.tzinfo is not None:
+                            parsed_date = parsed_date.replace(tzinfo=None)
+                    except:
+                        pass
+                if not parsed_date:
+                    continue
+                if start_date <= parsed_date <= end_date:
+                    rows.append({"Date": parsed_date, "Title": titulo,
+                                "Link": link, "Organismo": "BPI"})
+        except Exception as e:
+            continue
+
+    # ========== 2. IFC publications (HTML) - TU CÓDIGO EXISTENTE ==========
+    urls_html = ["https://www.bis.org/ifc/publications.htm"]
+    for url in urls_html:
+        try:
+            res = requests.get(url, headers=headers, timeout=15)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            content_div = soup.find('div', id='cmsContent')
+            if not content_div:
+                continue
+            for p in content_div.find_all('p'):
+                a_tag = p.find('a')
+                if not a_tag:
+                    continue
+                titulo = a_tag.get_text(strip=True)
+                href = a_tag.get('href', '')
+                if not href or 'index.htm' in href:
+                    continue
+                link = "https://www.bis.org" + href if href.startswith('/') else href
+                full_text = p.get_text(strip=True)
+                date_str = full_text.replace(titulo, '').strip(', ')
+                parsed_date = None
+                if date_str:
+                    try:
+                        parsed_date = parser.parse(date_str)
+                        if parsed_date.tzinfo is not None:
+                            parsed_date = parsed_date.replace(tzinfo=None)
+                    except:
+                        pass
+                if not parsed_date:
+                    match = re.search(r'\b(20\d{2})\b', titulo)
+                    if match:
+                        parsed_date = datetime.datetime(int(match.group(1)), 1, 1)
+                if not parsed_date:
+                    continue
+                if start_date <= parsed_date <= end_date:
+                    rows.append({"Date": parsed_date, "Title": titulo,
+                                "Link": link, "Organismo": "BPI"})
+        except Exception as e:
+            continue
+
+    # ========== 3. NUEVO: CGFS publications (API) ==========
+    try:
+        url_cgfs_api = "https://www.bis.org/api/document_lists/cgfs_publs.json"
+        res = requests.get(url_cgfs_api, headers=headers, timeout=15)
+        if res.status_code == 200:
+            data = res.json()
+            for path, doc in data.get("list", {}).items():
+                titulo = html.unescape(doc.get("short_title", ""))
+                if not titulo:
+                    continue
+                link = "https://www.bis.org" + doc.get("path", "")
+                if not link.endswith(".htm") and not link.endswith(".pdf"):
+                    link += ".htm"
+                try:
+                    parsed_date = parser.parse(doc.get("publication_start_date", ""))
+                    if parsed_date.tzinfo is not None:
+                        parsed_date = parsed_date.replace(tzinfo=None)
+                    if start_date <= parsed_date <= end_date:
+                        rows.append({"Date": parsed_date, "Title": titulo,
+                                    "Link": link, "Organismo": "BPI"})
+                except:
+                    continue
+    except Exception as e:
+        print(f"   ⚠️ Error en CGFS API: {e}")
+
+    # ========== 4. NUEVO: CGFS HTML (para documento No 71 que no está en API) ==========
+    try:
+        url_cgfs_html = "https://www.bis.org/cgfs_publs/index.htm"
+        res = requests.get(url_cgfs_html, headers=headers, timeout=15)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            
+            # Buscar filas de la tabla
+            rows_html = soup.find_all('tr')
+            
+            for row in rows_html:
+                try:
+                    cells = row.find_all('td')
+                    if len(cells) < 2:
+                        continue
+                    
+                    # Fecha en primera celda
+                    date_text = cells[0].get_text(strip=True)
+                    match = re.search(r'(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})', date_text)
+                    if not match:
+                        continue
+                    
+                    day = int(match.group(1))
+                    mes_str = match.group(2).lower()
+                    año = int(match.group(3))
+                    
+                    meses = {'jan':1, 'feb':2, 'mar':3, 'apr':4, 'may':5, 'jun':6,
+                            'jul':7, 'aug':8, 'sep':9, 'oct':10, 'nov':11, 'dec':12}
+                    mes = meses.get(mes_str[:3], 1)
+                    parsed_date = datetime.datetime(año, mes, day)
+                    
+                    if parsed_date < start_date or parsed_date > end_date:
+                        continue
+                    
+                    # Título y enlace en segunda celda
+                    link_elem = cells[1].find('a')
+                    if not link_elem:
+                        continue
+                    
+                    titulo = link_elem.get_text(strip=True)
+                    link = link_elem.get('href')
+                    if link and not link.startswith('http'):
+                        link = "https://www.bis.org" + link
+                    
+                    # Evitar duplicados con los de la API
+                    if not any(r['Link'] == link for r in rows):
+                        rows.append({
+                            "Date": parsed_date,
+                            "Title": titulo,
+                            "Link": link,
+                            "Organismo": "BPI"
+                        })
+                        print(f"   ✅ CGFS HTML: {parsed_date.date()} - {titulo[:50]}...")
+                        
+                except Exception as e:
+                    continue
+                    
+    except Exception as e:
+        print(f"   ⚠️ Error scraping CGFS: {e}")
+
+    # ========== 5. Crear DataFrame final ==========
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.drop_duplicates(subset=['Link'])
+        df["Date"] = pd.to_datetime(df["Date"])
+        if df["Date"].dt.tz is not None:
+            df["Date"] = df["Date"].dt.tz_convert(None)
+        df = df.sort_values("Date", ascending=False)
+    
+    print(f"✅ BPI Reportes - Total final: {len(df)} documentos")
+    return df
+
+
 ## Reportes BM
 @st.cache_data(show_spinner=False)
 def load_reportes_bm(start_date_str, end_date_str):
@@ -572,77 +766,6 @@ def load_reportes_bm(start_date_str, end_date_str):
     return df
 
 
-@st.cache_data(show_spinner=False)
-def load_reportes_bpi(start_date_str, end_date_str):
-    urls_api = [
-        "https://www.bis.org/api/document_lists/bcbspubls.json",
-        "https://www.bis.org/api/document_lists/cpmi_publs.json"
-    ]
-    urls_html = ["https://www.bis.org/ifc/publications.htm"]
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    
-    try: start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
-    except: start_date = datetime.datetime(2000, 1, 1)
-    
-    rows = []
-    
-    for url in urls_api:
-        try:
-            res = requests.get(url, headers=headers, timeout=15)
-            data = res.json()
-            lista_documentos = data.get("list", {})
-            for path, doc_info in lista_documentos.items():
-                titulo = html.unescape(doc_info.get("short_title", ""))
-                if not titulo: continue
-                link = "https://www.bis.org" + doc_info.get("path", "")
-                if not link.endswith(".htm") and not link.endswith(".pdf"):
-                    link += ".htm"
-                date_str = doc_info.get("publication_start_date", "")
-                parsed_date = None
-                if date_str:
-                    try: parsed_date = parser.parse(date_str)
-                    except: pass
-                if not parsed_date: continue
-                if parsed_date >= start_date:
-                    rows.append({"Date": parsed_date, "Title": titulo, "Link": link, "Organismo": "BPI"})
-        except Exception as e:
-            continue
-
-    for url in urls_html:
-        try:
-            res = requests.get(url, headers=headers, timeout=15)
-            soup = BeautifulSoup(res.text, 'html.parser')
-            content_div = soup.find('div', id='cmsContent')
-            if not content_div: continue
-            for p in content_div.find_all('p'):
-                a_tag = p.find('a')
-                if not a_tag: continue
-                titulo = a_tag.get_text(strip=True)
-                href = a_tag.get('href', '')
-                if not href or 'index.htm' in href: continue 
-                link = "https://www.bis.org" + href if href.startswith('/') else href
-                full_text = p.get_text(strip=True)
-                date_str = full_text.replace(titulo, '').strip(', ')
-                parsed_date = None
-                if date_str:
-                    try: parsed_date = parser.parse(date_str)
-                    except: pass
-                if not parsed_date:
-                    match = re.search(r'\b(20\d{2})\b', titulo)
-                    if match: parsed_date = datetime.datetime(int(match.group(1)), 1, 1)
-                if not parsed_date: continue
-                if parsed_date >= start_date:
-                    rows.append({"Date": parsed_date, "Title": titulo, "Link": link, "Organismo": "BPI"})
-        except Exception as e:
-            continue
-            
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df = df.drop_duplicates(subset=['Link'])
-        df["Date"] = pd.to_datetime(df["Date"])
-        if df["Date"].dt.tz is not None: df["Date"] = df["Date"].dt.tz_convert(None)
-        df = df.sort_values("Date", ascending=False)
-    return df
 
 ## Reportes FM - 
 
@@ -988,56 +1111,7 @@ def load_reportes_ocde(start_date_str, end_date_str):
     return df
     
 
-@st.cache_data(show_spinner=False)
-def load_reportes_bpi(start_date_str, end_date_str):
-    urls_api = ["https://www.bis.org/api/document_lists/bcbspubls.json", "https://www.bis.org/api/document_lists/cpmi_publs.json"]
-    urls_html = ["https://www.bis.org/ifc/publications.htm"]
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try: start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
-    except: start_date = datetime.datetime(2000, 1, 1)
-    rows = []
-    for url in urls_api:
-        try:
-            res = requests.get(url, headers=headers, timeout=15)
-            data = res.json()
-            for path, doc in data.get("list", {}).items():
-                titulo = html.unescape(doc.get("short_title", ""))
-                if not titulo: continue
-                link = "https://www.bis.org" + doc.get("path", "")
-                if not link.endswith(".htm") and not link.endswith(".pdf"): link += ".htm"
-                try: parsed_date = parser.parse(doc.get("publication_start_date", ""))
-                except: continue
-                if parsed_date >= start_date:
-                    rows.append({"Date": parsed_date, "Title": titulo, "Link": link, "Organismo": "BPI"})
-        except: continue
-    for url in urls_html:
-        try:
-            res = requests.get(url, headers=headers, timeout=15)
-            soup = BeautifulSoup(res.text, 'html.parser')
-            content_div = soup.find('div', id='cmsContent')
-            if not content_div: continue
-            for p in content_div.find_all('p'):
-                a_tag = p.find('a')
-                if not a_tag: continue
-                titulo = a_tag.get_text(strip=True)
-                href = a_tag.get('href', '')
-                if not href or 'index.htm' in href: continue 
-                link = "https://www.bis.org" + href if href.startswith('/') else href
-                parsed_date = None
-                try: parsed_date = parser.parse(p.get_text(strip=True).replace(titulo, '').strip(', '))
-                except: pass
-                if not parsed_date:
-                    match = re.search(r'\b(20\d{2})\b', titulo)
-                    if match: parsed_date = datetime.datetime(int(match.group(1)), 1, 1)
-                if parsed_date and parsed_date >= start_date:
-                    rows.append({"Date": parsed_date, "Title": titulo, "Link": link, "Organismo": "BPI"})
-        except: continue
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df = df.drop_duplicates(subset=['Link'])
-        df["Date"] = pd.to_datetime(df["Date"])
-        df = df.sort_values("Date", ascending=False)
-    return df
+
 
 # --- SECCIÓN: PUBLICACIONES INSTITUCIONALES ---
 @st.cache_data(show_spinner=False)
@@ -4188,9 +4262,9 @@ meses_dict = {
 }
 
 # --- LISTAS DINÁMICAS DE ORGANISMOS ---
-orgs_discursos = ["BBk (Alemania)", "BdE (España)", "BdF (Francia)", "BM", "BoC (Canadá)", "BoJ (Japón)", "BPI", "CEF", "ECB (Europa)", "Fed (Estados Unidos)", "PBoC (China)"]
+orgs_discursos = ["BBk (Alemania)", "BdE (España)", "BdF (Francia)", "BM", "BoC (Canadá)", "BoE (Inglaterra)", "BoJ (Japón)", "BPI", "CEF", "ECB (Europa)", "Fed (Estados Unidos)", "FMI", "PBoC (China)"]
 orgs_reportes = ["BID", "BM", "BPI", "CEF", "FEM", "OCDE"]
-orgs_pub_inst = ["BM", "BPI", "CEF", "CEMLA", "FMI", "G20", "OCDE", "OEI"] 
+orgs_pub_inst = ["BM", "BPI", "CEF", "CEMLA", "FMI", "FMI (Mission Concluding)", "F&D", "G20", "OCDE", "OEI", "F&D Magazine"] 
 orgs_investigacion = ["BID", "BM", "BPI", "CEMLA", "FMI", "OCDE"]
 
 if modo_app == "Boletín":
@@ -4535,24 +4609,144 @@ elif modo_app == "Categorías":
 
                 print(f"📊 Total después de desduplicación: {len(f_df)}")
 
-                # --- PREPARACIÓN PARA EL WORD (Orden Institucional) ---
-                if tipo_doc == "Discursos":
-                    f_df = f_df.sort_values(by=["Title"], ascending=[True])
-                else:
-                    f_df = f_df.sort_values(by=["Organismo", "Title"], ascending=[True, True])
-                    
-                f_df = f_df[['Categoría', 'Organismo', 'Title', 'Link']]
-                f_df = f_df.rename(columns={"Categoría": "Tipo de Documento", "Title": "Nombre de Documento"})
-                
-                st.success(f"Se encontraron **{len(f_df)}** documentos.")
-                word_file = generate_word(f_df, title=f"Explorador - {tipo_doc}")
-                st.download_button("📄 Descargar en Word", data=word_file, file_name=f"Explorador_{tipo_doc}.docx")
-                
-                # Previsualización en pantalla
+                # --- PREPARACIÓN PARA LA VISTA PREVIA ---
                 disp = f_df.copy()
-                disp["Nombre de Documento"] = disp.apply(lambda x: f"[{x['Nombre de Documento']}]({x['Link']})", axis=1)
-                
-                cols_vis = ["Tipo de Documento", "Organismo", "Nombre de Documento"] if organismo_seleccionado == "Todos" else ["Tipo de Documento", "Nombre de Documento"]
+                disp = disp.sort_values(
+                    by="Date", ascending=False)  # Orden cronológico
+                disp["Fecha"] = disp["Date"].dt.strftime(
+                    '%d/%m/%Y')  # Formatear fecha
+                disp["Nombre de Documento"] = disp.apply(
+                    lambda x: f"[{x['Title']}]({x['Link']})", axis=1)
+                disp = disp.rename(columns={"Categoría": "Tipo de Documento"})
+
+                if organismo_seleccionado == "Todos":
+                    cols_vis = ["Fecha", "Tipo de Documento",
+                                "Organismo", "Nombre de Documento"]
+                else:
+                    cols_vis = ["Fecha", "Tipo de Documento",
+                                "Nombre de Documento"]
+
                 st.markdown(disp[cols_vis].to_markdown(index=False), unsafe_allow_html=True)
-            else: 
-                st.warning("No se encontraron documentos para las fechas seleccionadas.")
+            else:
+                # Verificar si CEMLA estaba en la búsqueda y no hay resultados
+                if "CEMLA" in target_orgs and tipo_doc == "Investigación":
+                    st.warning("⚠️ No se encontraron documentos para las fechas seleccionadas.")
+                    st.info("📌 **CEMLA Investigación**: ScienceDirect bloquea el acceso automatizado. No se pueden extraer artículos.\n\n➡️ **Solución**: Utiliza la sección **'Carga Manual'** en el menú principal para agregar estos documentos al boletín mensual.")
+                else:
+                    st.warning(
+                    "No se encontraron documentos para las fechas seleccionadas.")
+
+elif modo_app == "Carga Manual":
+    st.title("🛠️ Centro de Carga Manual")
+    st.markdown("Pega el texto de las páginas que fallan. Previsualiza, valida y une todo en un solo documento.")
+    
+    if 'cargas_validadas' not in st.session_state:
+        st.session_state.cargas_validadas = {
+            "OCDE (Reportes)": pd.DataFrame(),
+            "OCDE (Pub. Institucionales)": pd.DataFrame(),
+            "OCDE (Investigación)": pd.DataFrame()
+        }
+
+    st.subheader("Estado de Carga")
+    cols_estado = st.columns(3)
+    claves_cajas = list(st.session_state.cargas_validadas.keys())
+    
+    for i, clave in enumerate(claves_cajas):
+        estado = "✅ Listo" if not st.session_state.cargas_validadas[clave].empty else "❌ Pendiente"
+        cols_estado[i].info(f"**{clave}**\n\n{estado}")
+
+    st.markdown("---")
+    
+    c1, c2 = st.columns(2)
+    mes_manual = c1.selectbox("Mes objetivo a filtrar:", [1,2,3,4,5,6,7,8,9,10,11,12], index=datetime.datetime.now().month-1, format_func=lambda x: calendar.month_name[x].capitalize())
+    año_manual = c2.number_input("Año objetivo a filtrar:", min_value=2020, max_value=2030, value=datetime.datetime.now().year)
+
+    st.markdown("---")
+    st.subheader("Cajas de Extracción")
+
+    def crear_caja_manual(titulo_caja, categoria_doc, organismo_nombre, url_fuente=None):
+        with st.expander(f"📥 Cargar: {titulo_caja}", expanded=True):
+            
+            if url_fuente:
+                st.markdown(f"👉 **[Haz clic aquí para abrir la página oficial de {titulo_caja}]({url_fuente})**")
+                
+            texto = st.text_area(f"Copia el texto de la página y pégalo aquí (Ctrl+A, Ctrl+C, Ctrl+V):", height=150, key=f"txt_{titulo_caja}")
+            
+            col_btn1, col_btn2 = st.columns([1, 1])
+            
+            if col_btn1.button(f"🔍 Previsualizar {titulo_caja}", key=f"btn_prev_{titulo_caja}"):
+                if texto:
+                    with st.spinner("Procesando y buscando links..."):
+                        df_bruto = procesar_texto_pegado(texto, organismo_nombre)
+                            
+                        if not df_bruto.empty:
+                            df_filtrado = df_bruto[
+                                (df_bruto['Date'].dt.month == mes_manual) & 
+                                (df_bruto['Date'].dt.year == año_manual)
+                            ].copy()
+                            
+                            if not df_filtrado.empty:
+                                for idx in df_filtrado.index:
+                                    t = df_filtrado.loc[idx, "Title"]
+                                    df_filtrado.loc[idx, "Link"] = buscar_link_inteligente(t, organismo_nombre)
+                                
+                                df_filtrado['Categoría'] = categoria_doc
+                                st.session_state[f"temp_{titulo_caja}"] = df_filtrado
+                                
+                                st.success(f"Se encontraron {len(df_filtrado)} documentos de {mes_manual} {año_manual}.")
+                                st.dataframe(df_filtrado, use_container_width=True)
+                            else:
+                                st.warning("No hay coincidencias con el mes y año seleccionados.")
+                else:
+                    st.error("Pega el texto primero.")
+            
+            if col_btn2.button(f"➕ Agregar a Descarga Final", type="primary", key=f"btn_add_{titulo_caja}"):
+                if f"temp_{titulo_caja}" in st.session_state and not st.session_state[f"temp_{titulo_caja}"].empty:
+                    st.session_state.cargas_validadas[titulo_caja] = st.session_state[f"temp_{titulo_caja}"]
+                    st.success(f"¡{titulo_caja} guardado en memoria! ✅")
+                    time.sleep(1)
+                    st.rerun() 
+                else:
+                    st.error("Primero debes Previsualizar y obtener resultados.")
+
+    link_ocde_rep = "https://www.oecd.org/en/search/publications.html?orderBy=mostRecent&page=0&facetTags=oecd-content-types%3Apublications%2Freports%2Coecd-languages%3Aen&minPublicationYear=2026&maxPublicationYear=2026"
+    link_ocde_pub = "https://www.oecd.org/en/search.html?orderBy=mostRecent&page=0&facetTags=oecd-policy-subissues%3Apsi114%2Coecd-languages%3Aen"
+    link_ocde_inv = "https://www.oecd.org/en/publications/reports.html?orderBy=mostRecent&page=0&facetTags=oecd-content-types%3Apublications%2Fworking-papers%2Coecd-languages%3Aen"
+    
+    crear_caja_manual("OCDE (Reportes)", "Reportes", "OCDE", link_ocde_rep)
+    crear_caja_manual("OCDE (Pub. Institucionales)", "Publicaciones Institucionales", "OCDE", link_ocde_pub)
+    crear_caja_manual("OCDE (Investigación)", "Investigación", "OCDE", link_ocde_inv)
+
+    st.markdown("---")
+    st.subheader("Exportación Final")
+    
+    tablas_listas = [df for df in st.session_state.cargas_validadas.values() if not df.empty]
+    
+    if tablas_listas:
+        df_maestro = pd.concat(tablas_listas, ignore_index=True)
+        num_cat = len(tablas_listas)
+        st.info(f"Tienes **{num_cat}/3** categorías listas, sumando un total de **{len(df_maestro)}** documentos para exportar.")
+        
+        df_word_manual = df_maestro[['Categoría', 'Organismo', 'Title', 'Link']].copy()
+        df_word_manual = df_word_manual.rename(columns={"Categoría": "Tipo de Documento", "Title": "Nombre de Documento"})
+        
+        word_manual = generate_word(df_word_manual, title="Boletín - Carga Manual", subtitle=f"Mes: {mes_manual} | Año: {año_manual}")
+        
+        c_down, c_clear = st.columns(2)
+        with c_down:
+            st.download_button(
+                label=f"📄 Descargar Word ({num_cat}/3 Listas)", 
+                data=word_manual, 
+                file_name=f"Carga_Manual_{mes_manual}_{año_manual}.docx"
+            )
+        with c_clear:
+            if st.button("🗑️ Reiniciar todo el módulo"):
+                for clave in st.session_state.cargas_validadas.keys():
+                    st.session_state.cargas_validadas[clave] = pd.DataFrame()
+                st.rerun()
+    else:
+        st.warning("Aún no has agregado ninguna carga a la descarga final. Agrega al menos 1 para habilitar el botón de descarga.")
+
+# ==========================================
+# CÓDIGO DE PRUEBA (agregar al final de app.py)
+# ==========================================
