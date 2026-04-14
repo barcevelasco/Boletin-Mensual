@@ -4362,6 +4362,11 @@ if modo_app == "Boletín":
                 try:
                     if org == "BPI": df = load_data_bis()
                     elif org == "ECB (Europa)": df = load_data_ecb(sd, ed)
+                    elif org == "BoE (Inglaterra)": df = load_discursos_boe(sd, ed)
+                    elif org == "FMI":
+                        df = load_discursos_fmi(sd, ed)
+                    elif org == "BdE (España)":
+                        df = load_data_bde(sd, ed)
                     elif org == "BBk (Alemania)": df = load_data_bbk(sd, ed)
                     elif org == "Fed (Estados Unidos)": df = load_data_fed(a_num)
                     elif org == "BdF (Francia)": df = load_data_bdf(sd, ed)
@@ -4410,6 +4415,16 @@ if modo_app == "Boletín":
                     if org == "BPI": df = load_pub_inst_bpi(sd, ed)
                     elif org == "CEF": df = load_pub_inst_cef(sd, ed)
                     elif org == "BM": df = load_pub_inst_bm(sd, ed)
+                    elif org == "OCDE":
+                        df = load_pub_inst_ocde(sd, ed)
+                    elif org == "OEI":
+                        df = load_pub_inst_oei(sd, ed)
+                    elif org == "CEMLA":
+                        df = load_pub_inst_cemla(sd, ed)
+                    elif org == "G20":
+                        df = load_pub_inst_g20(sd, ed)
+                    elif org == "F&D Magazine" or org == "F&D":
+                        df = load_pub_inst_fandd(sd, ed)
                     elif org == "FMI": 
                         # 1. SSG - JSON Estático (WEO, Fiscal Monitor)
                         df_flagships = load_pub_inst_fmi(sd, ed)
@@ -4442,9 +4457,24 @@ if modo_app == "Boletín":
                 txt.text(f"Procesando Investigación: {org}...")
                 df = pd.DataFrame()
                 try:
-                    if org == "BPI": df = load_investigacion_bpi(sd, ed)
-                    elif org == "BM": df = load_investigacion_bm(sd, ed)
-                except Exception as e: pass 
+                    if org == "BID":
+                        df = load_investigacion_bid_unified(sd, ed)
+                    elif org == "BPI":
+                        df = load_investigacion_bpi(sd, ed)
+                    elif org == "BM":
+                        df = load_investigacion_bm(sd, ed)
+                    elif org == "CEMLA":
+                        df = load_investigacion_cemla(sd, ed)
+                    elif org == "FMI":
+                        df_blogs = load_investigacion_fmi(sd, ed)
+                        df_wp = load_working_papers_fmi(sd, ed)
+                        dfs_fmi = [d for d in [df_blogs, df_wp] if not d.empty]
+                        if dfs_fmi:
+                            df = pd.concat(dfs_fmi, ignore_index=True)
+                    elif org == "OCDE":
+                        df = load_investigacion_ocde(sd, ed)
+                except Exception as e:
+                    print(f"Error en {org}: {e}")
                 
                 if not df.empty:
                     df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
