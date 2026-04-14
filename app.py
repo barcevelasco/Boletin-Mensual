@@ -2529,6 +2529,70 @@ def load_working_papers_fmi(start_date_str, end_date_str):
     print(f"📊 FMI Working Papers - Total final: {len(df)}")
     return df
 
+# --- SECCIÓN: INVESTIGACIÓN --- 
+@st.cache_data(show_spinner=False)
+def load_investigacion_bpi(start_date_str, end_date_str):
+    """Extractor Investigación BPI (BIS Papers & Working Papers) vía API JSON"""
+    import requests
+    import pandas as pd
+    import datetime
+    import html
+    from dateutil import parser
+    
+    # Configuración de fechas
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+    except:
+        start_date = datetime.datetime.now() - datetime.timedelta(days=365)
+        end_date = datetime.datetime.now()
+
+    # Los dos endpoints JSON de investigación del BPI
+    urls = [
+        "https://www.bis.org/api/document_lists/bispapers.json",
+        "https://www.bis.org/api/document_lists/wppubls.json"
+    ]
+    
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    rows = []
+
+    for url in urls:
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Usamos la lógica de extracción exacta de tu función de discursos
+                for path, doc in data.get("list", {}).items():
+                    title = html.unescape(doc.get("short_title", ""))
+                    date_str = doc.get("publication_start_date", "")
+                    
+                    link = "https://www.bis.org" + path + (".htm" if not path.endswith(".htm") else "")
+                    
+                    if title and date_str:
+                        try:
+                            # Convertimos a datetime para aplicar el filtro de tu app
+                            p_date = parser.parse(date_str).replace(tzinfo=None)
+                            
+                            if start_date <= p_date <= end_date:
+                                rows.append({
+                                    "Date": p_date,
+                                    "Title": title,
+                                    "Link": link,
+                                    "Organismo": "BPI"
+                                })
+                        except:
+                            continue
+        except Exception as e:
+            print(f"Error BPI Investigación en {url}: {e}")
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.drop_duplicates(subset=['Link'])
+        df = df.sort_values("Date", ascending=False)
+        
+    return df
+
 # ========== INVESTIGACIÓN CEMLA (Latin American Journal of Central Banking) ==========
 @st.cache_data(show_spinner=False)
 def load_investigacion_cemla(start_date_str, end_date_str):
