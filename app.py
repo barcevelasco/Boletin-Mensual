@@ -785,7 +785,8 @@ def load_reportes_fem(start_date_str, end_date_str):
         end_date = datetime.datetime.now()
 
     rows = []
-    url = "https://es.weforum.org/publications/"
+    # CAMBIO IMPORTANTE: Eliminar el filtro de tipos
+    url = "https://es.weforum.org/publications/?years=2026"  # ← Sin filter de tipos
     
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -798,54 +799,108 @@ def load_reportes_fem(start_date_str, end_date_str):
         driver = webdriver.Chrome(options=chrome_options)
         driver.get(url)
         time.sleep(8)
-        # Scroll para despertar la lista dinámica
         driver.execute_script("window.scrollTo(0, 1000);")
         time.sleep(4)
         
         js_script = """
         let res = [];
+        let seenLinks = new Set();
+        
         document.querySelectorAll('a[href*="/publications/"]').forEach(el => {
             let title = el.innerText || el.textContent || "";
-            let container = el.closest('article') || el.closest('div[class*="wef-"]') || el.parentElement;
-            let date = container.querySelector('time')?.getAttribute('datetime');
-            if (title.length > 15) {
-                res.push({ t: title, l: el.href, d: date });
+            let href = el.href;
+            
+            title = title.split('\\n')[0];
+            title = title.replace(/Download PDF|Leer más|Read more|View details/gi, '').trim();
+            
+            if (title.length > 15 && !seenLinks.has(href) && !href.includes('/series/')) {
+                seenLinks.add(href);
+                
+                let container = el.closest('article') || el.closest('div[class*="publication"]') || el.parentElement;
+                let date = "";
+                
+                let dateEl = container ? container.querySelector('.date, time, [class*="date"], [class*="Date"]') : null;
+                if (dateEl) {
+                    date = dateEl.innerText || dateEl.textContent || "";
+                }
+                
+                if (!date) {
+                    let siblings = el.parentElement ? el.parentElement.querySelectorAll('div, span, p') : [];
+                    for (let sib of siblings) {
+                        let text = sib.innerText || "";
+                        if (text.match(/\\d{1,2}\\s+[A-Za-z]{3,}\\s+\\d{4}/)) {
+                            date = text;
+                            break;
+                        }
+                    }
+                }
+                
+                res.push({ t: title, l: href, d: date });
             }
         });
         return res;
         """
+        
         extracted = driver.execute_script(js_script)
         driver.quit()
 
-        for item in extracted:
-            # Limpieza de título (quitar saltos de línea y frases de botones)
-            titulo = item['t'].split('\n')[0]
-            titulo = re.sub(r'(?i)Download PDF|Leer más|Read more|View details', '', titulo).strip()
-            link = item['l']
-            
-            if "/series/" in link: continue
+        print(f"   📚 Total de ítems encontrados: {len(extracted)}")
+        
+        meses_map = {
+            'ene': 1, 'feb': 2, 'mar': 3, 'abr': 4, 'may': 5, 'jun': 6,
+            'jul': 7, 'ago': 8, 'sep': 9, 'sept': 9, 'oct': 10, 'nov': 11, 'dic': 12,
+            'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5, 'junio': 6,
+            'julio': 7, 'agosto': 8, 'septiembre': 9, 'octubre': 10, 'noviembre': 11, 'diciembre': 12
+        }
 
-            # Parseo de Fecha
+        for item in extracted:
+            titulo = item['t']
+            link = item['l']
+            fecha_texto = item['d'].lower() if item['d'] else ""
+            
             parsed_date = None
-            if item['d']:
-                try: parsed_date = parser.parse(item['d']).replace(tzinfo=None)
-                except: pass
+            
+            match = re.search(r'(\d{1,2})\s+([a-z]{3,})\s+(\d{4})', fecha_texto)
+            if match:
+                dia = int(match.group(1))
+                mes_str = match.group(2)[:3]
+                año = int(match.group(3))
+                mes_num = meses_map.get(mes_str, 1)
+                try:
+                    parsed_date = datetime.datetime(año, mes_num, dia)
+                except:
+                    parsed_date = datetime.datetime(año, mes_num, 1)
             
             if not parsed_date:
-                # Fallback: Extraer /YYYY/MM/ del link
                 m = re.search(r'/(\d{4})/(\d{2})/', link)
-                if m: parsed_date = datetime.datetime(int(m.group(1)), int(m.group(2)), 1)
+                if m:
+                    parsed_date = datetime.datetime(int(m.group(1)), int(m.group(2)), 1)
 
             if parsed_date and start_date <= parsed_date <= end_date:
                 if not any(r['Link'] == link for r in rows):
-                    rows.append({"Date": parsed_date, "Title": titulo, "Link": link, "Organismo": "FEM"})
-    except:
-        pass
+                    rows.append({
+                        "Date": parsed_date, 
+                        "Title": titulo, 
+                        "Link": link, 
+                        "Organismo": "FEM"
+                    })
+                    print(f"   ✅ {parsed_date.strftime('%d/%m/%Y')}: {titulo[:50]}...")
+                    
+    except Exception as e:
+        print(f"❌ Error en load_reportes_fem: {e}")
+        import traceback
+        traceback.print_exc()
 
     df = pd.DataFrame(rows)
     if not df.empty:
         df["Date"] = pd.to_datetime(df["Date"])
         df = df.sort_values("Date", ascending=False).drop_duplicates(subset=['Link'])
+    
+    print(f"\n📋 TODOS los títulos encontrados ({len(df)} documentos):")
+    for i, row in df.iterrows():
+        print(f"   - {row['Date'].strftime('%d/%m/%Y')}: {row['Title'][:60]}...")
+    
+    print(f"📊 FEM Reportes - Total final: {len(df)} documentos")
     return df
 
 
