@@ -3654,38 +3654,286 @@ def load_data_boj(start_date_str, end_date_str):
 
 @st.cache_data(show_spinner=False)
 def load_data_cef(start_date_str, end_date_str):
-    base_url = "https://www.fsb.org/press/speeches-and-statements/"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try: start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
-    except: start_date = datetime.datetime(2000, 1, 1)
-    rows, page = [], 1
-    while True:
-        url = f"{base_url}?dps_paged={page}"
+    """
+    Extractor CEF (FSB) - SOLO Discursos y Statements
+    Con manejo robusto de timeouts y fallbacks para autor
+    """
+    import requests
+    from bs4 import BeautifulSoup
+    import datetime
+    import time
+    import re
+    from dateutil import parser
+    
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 CEF (FSB): {start_date.date()} a {end_date.date()}")
+    except:
+        start_date = datetime.datetime(2000, 1, 1)
+        end_date = datetime.datetime.now()
+        print(f"⚠️ Error en fechas, usando rango por defecto")
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+    }
+    
+    rows = []
+    page = 1
+    
+    def es_discurso(url, titulo):
+        """Determina si una página es un discurso"""
+        titulo_lower = titulo.lower()
+        url_lower = url.lower()
+        
+        # Excluir comunicados de prensa puros
+        if re.match(r'^(fsb publishes|fsb warns|fsb chair warns)(?!.*(speech|keynote|summit))', titulo_lower):
+            return False
+        
+        # Incluir por URL
+        if any(keyword in url_lower for keyword in ['/speech/', '/statement/', '/remarks/']):
+            return True
+        
+        # Incluir por palabras clave en título
+        if any(keyword in titulo_lower for keyword in [
+            'speech', 'keynote', 'remarks', 'statement', 'foreword', 
+            'address', 'testimony', 'opening remarks', 'closing remarks'
+        ]):
+            return True
+        
+        # Incluir si menciona autoridades del FSB
+        if any(title_word in titulo_lower for title_word in ['fsb chair', 'secretary general', 'deputy governor']):
+            return True
+        
+        return False
+    
+    def inferir_autor_desde_titulo(titulo):
+        """Infiere el autor basándose en el título cuando no se puede acceder a la página"""
+        titulo_lower = titulo.lower()
+        
+        # Palabras clave que indican quién es el autor
+        if 'fsb chair' in titulo_lower or 'chair' in titulo_lower:
+            return 'Andrew Bailey'
+        if 'secretary general' in titulo_lower:
+            return 'John Schindler'
+        if 'deputy governor' in titulo_lower:
+            # Podría ser varios, pero intentamos extraer del contexto
+            if 'john schindler' in titulo_lower:
+                return 'John Schindler'
+            return 'FSB Deputy Governor'
+        
+        return None
+    
+    def extraer_autor_y_titulo_desde_pagina(url, titulo_lista):
+        """Extrae el autor y el título limpio de la página individual con manejo de timeouts"""
+        autor = None
+        titulo_limpio = titulo_lista
+        
         try:
-            res = requests.get(url, headers=headers, timeout=12)
-            soup = BeautifulSoup(res.text, 'html.parser')
+            # Timeout más generoso y reintento
+            time.sleep(0.5)
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.status_code != 200:
+                # Fallback: inferir autor del título
+                autor = inferir_autor_desde_titulo(titulo_lista)
+                return autor, titulo_limpio
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # === OBTENER TÍTULO CORRECTO DEL <h1> ===
+            h1_tag = soup.find('h1')
+            if h1_tag:
+                titulo_limpio = h1_tag.get_text(strip=True)
+                titulo_limpio = re.sub(r'\s+', ' ', titulo_limpio).strip()
+            
+            # === EXTRAER AUTOR ===
+            # Método 1: Buscar en el bloque blockquote
+            blockquote = soup.find('blockquote')
+            if blockquote:
+                texto = blockquote.get_text()
+                match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),?\s+(?:the\s+)?(?:Chair|Secretary General|Deputy Governor|Governor)', texto)
+                if match:
+                    autor = match.group(1).strip()
+                
+                if not autor:
+                    match = re.search(r'by\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', texto)
+                    if match:
+                        autor = match.group(1).strip()
+            
+            # Método 2: Buscar en meta tags de perfil
+            if not autor:
+                meta_profile = soup.find('meta', attrs={'name': 'fsb_profile_post'})
+                if meta_profile:
+                    profile_value = meta_profile.get('content', '').lower()
+                    nombres = {
+                        'andrew-bailey': 'Andrew Bailey',
+                        'john-schindler': 'John Schindler',
+                        'klaas-knot': 'Klaas Knot',
+                        'martin-moloney': 'Martin Moloney'
+                    }
+                    for key, name in nombres.items():
+                        if key in profile_value:
+                            autor = name
+                            break
+            
+            # Método 3: Si el título contiene "FSB Chair", el autor es Andrew Bailey
+            if not autor and ('FSB Chair' in titulo_limpio or 'Chair' in titulo_limpio):
+                autor = 'Andrew Bailey'
+            
+            # Método 4: Buscar en el contenido del artículo
+            if not autor:
+                article = soup.find('article')
+                if article:
+                    text = article.get_text()
+                    match = re.search(r'Speech\s+by\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', text, re.IGNORECASE)
+                    if match:
+                        autor = match.group(1).strip()
+            
+            # Si aún no hay autor, intentar inferir del título
+            if not autor:
+                autor = inferir_autor_desde_titulo(titulo_limpio)
+            
+            return autor, titulo_limpio
+            
+        except requests.exceptions.Timeout:
+            print(f"      ⚠️ Timeout al acceder a {url}, infiriendo autor del título...")
+            autor = inferir_autor_desde_titulo(titulo_lista)
+            return autor, titulo_limpio
+        except Exception as e:
+            print(f"      ⚠️ Error: {e}")
+            autor = inferir_autor_desde_titulo(titulo_lista)
+            return autor, titulo_limpio
+    
+    while True:
+        try:
+            if page == 1:
+                url = "https://www.fsb.org/press/speeches-and-statements/"
+            else:
+                url = f"https://www.fsb.org/press/speeches-and-statements/page/{page}/"
+            
+            print(f"📄 Procesando página {page}: {url}")
+            
+            response = requests.get(url, headers=headers, timeout=20)
+            if response.status_code != 200:
+                print(f"   ❌ Error HTTP: {response.status_code}")
+                break
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
             items = soup.find_all('div', class_='post-excerpt')
-            if not items: break
+            
+            if not items:
+                items = soup.find_all('div', class_=lambda c: c and 'post-excerpt' in c if c else False)
+            
+            if not items:
+                print(f"   📭 No se encontraron más elementos en página {page}")
+                break
+            
+            print(f"   📚 Elementos encontrados: {len(items)}")
             items_found = 0
+            
             for item in items:
-                title_tag = item.find('div', class_='post-title')
-                if not title_tag or not title_tag.find('a'): continue
-                a = title_tag.find('a')
-                titulo_raw, link = a.get_text(strip=True), a['href']
-                date_tag = item.find('div', class_='post-date')
-                try: parsed_date = parser.parse(date_tag.get_text(strip=True))
-                except: continue
-                if not any(r['Link'] == link for r in rows):
-                    rows.append({"Date": parsed_date, "Title": titulo_raw, "Link": link, "Organismo": "CEF"})
+                try:
+                    title_elem = item.find('h3')
+                    if not title_elem:
+                        title_elem = item.find('div', class_='post-title')
+                    
+                    if not title_elem:
+                        continue
+                    
+                    a_tag = title_elem.find('a')
+                    if not a_tag:
+                        continue
+                    
+                    titulo_raw = a_tag.get_text(strip=True)
+                    link = a_tag.get('href', '')
+                    
+                    if not link:
+                        continue
+                    
+                    date_elem = item.find('div', class_='post-date')
+                    if not date_elem:
+                        date_elem = item.find('span', class_='post-date')
+                    
+                    if not date_elem:
+                        continue
+                    
+                    fecha_texto = date_elem.get_text(strip=True)
+                    
+                    try:
+                        parsed_date = parser.parse(fecha_texto)
+                        if parsed_date.tzinfo is not None:
+                            parsed_date = parsed_date.replace(tzinfo=None)
+                    except:
+                        continue
+                    
+                    if parsed_date < start_date or parsed_date > end_date:
+                        continue
+                    
+                    if any(r['Link'] == link for r in rows):
+                        continue
+                    
+                    print(f"   🔍 Procesando: {parsed_date.strftime('%Y-%m-%d')} - {titulo_raw[:50]}...")
+                    
+                    if not es_discurso(link, titulo_raw):
+                        print(f"      ⏭️ Excluido (no es discurso): {titulo_raw[:50]}...")
+                        continue
+                    
+                    # === EXTRAER AUTOR Y TÍTULO ===
+                    autor, titulo_limpio = extraer_autor_y_titulo_desde_pagina(link, titulo_raw)
+                    
+                    # === CONSTRUIR TÍTULO FINAL ===
+                    if autor and titulo_limpio:
+                        # Verificar si el autor ya está al inicio del título
+                        if not titulo_limpio.lower().startswith(autor.lower()):
+                            titulo_final = f"{autor}: {titulo_limpio}"
+                        else:
+                            titulo_final = titulo_limpio
+                    else:
+                        titulo_final = titulo_limpio
+                    
+                    # Limpieza mínima
+                    titulo_final = re.sub(r'\s+', ' ', titulo_final).strip()
+                    titulo_final = titulo_final.replace('â', "'").replace('â€™', "'")
+                    
+                    rows.append({
+                        "Date": parsed_date,
+                        "Title": titulo_final,
+                        "Link": link,
+                        "Organismo": "CEF"
+                    })
                     items_found += 1
-            if items_found == 0 or (rows and rows[-1]['Date'] < start_date): break
+                    print(f"      ✅ Discurso: {titulo_final[:80]}...")
+                    
+                except Exception as e:
+                    print(f"   ⚠️ Error procesando item: {e}")
+                    continue
+            
+            print(f"   📊 Discursos en página {page}: {items_found}")
+            
+            # Si no encontramos discursos en 2 páginas consecutivas, paramos
+            if items_found == 0 and page > 2:
+                break
+            
             page += 1
-            time.sleep(0.3)
-        except: break
+            time.sleep(1.5)  # Pausa más larga entre páginas
+            
+        except requests.exceptions.Timeout:
+            print(f"   ⏱️ Timeout en página {page}, continuando...")
+            page += 1
+            time.sleep(3)
+            continue
+        except Exception as e:
+            print(f"❌ Error en página {page}: {e}")
+            break
+    
     df = pd.DataFrame(rows)
     if not df.empty:
         df["Date"] = pd.to_datetime(df["Date"])
         df = df.sort_values("Date", ascending=False)
+        df = df.drop_duplicates(subset=['Link'])
+    
+    print(f"\n📊 CEF (FSB) - Total final: {len(df)} discursos")
     return df
 
 ## - Discursos - Banco de España - 
