@@ -11,3 +11,4 @@ undetected-chromedriver
 PyPDF2
 urllib3
 html5lib
+tabulate
