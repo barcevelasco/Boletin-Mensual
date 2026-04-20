@@ -1,0 +1,13 @@
+streamlit
+requests
+pandas
+python-docx
+beautifulsoup4
+lxml
+python-dateutil
+cloudscraper
+selenium
+undetected-chromedriver
+PyPDF2
+urllib3
+html5lib
