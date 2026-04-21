@@ -3614,72 +3614,125 @@ def load_data_pboc(start_date_str, end_date_str):
     print(f"📊 PBoC (China) - Total: {len(df)} discursos")
     return df
 
+
+# FED - Discursos - 
 @st.cache_data(show_spinner=False)
 def load_data_fed(anios_num):
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    """
+    Extractor Fed (Estados Unidos) - Usando API JSON oficial
+    """
+    import datetime
+    import re
+    import pandas as pd
+    import requests
+    import json
+    
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
     rows = []
-    for year in anios_num:
-        url = f"https://www.federalreserve.gov/newsevents/{year}-speeches.htm"
-        try:
-            res = requests.get(url, headers=headers, timeout=12)
-            if res.status_code == 404:
-                url = "https://www.federalreserve.gov/newsevents/speeches.htm"
-                res = requests.get(url, headers=headers, timeout=12)
-            soup = BeautifulSoup(res.text, 'html.parser')
-            for a_tag in soup.find_all('a', href=True):
-                if '/newsevents/speech/' in a_tag['href']:
-                    link = "https://www.federalreserve.gov" + a_tag['href'] if a_tag['href'].startswith('/') else a_tag['href']
-                    titulo = a_tag.get_text(strip=True)
-                    parent = a_tag.find_parent('div', class_='row') or a_tag.parent
-                    text = parent.get_text(separator=' | ', strip=True)
-                    date_m = re.search(r'(\d{1,2}/\d{1,2}/\d{4}|\w+\s\d{1,2},\s\d{4})', text)
-                    if date_m:
-                        try:
-                            parsed_date = parser.parse(date_m.group(1))
-                            if parsed_date.year not in anios_num: continue
-                            rows.append({"Date": parsed_date, "Title": titulo, "Link": link, "Organismo": "Fed (Estados Unidos)"})
-                        except: pass
-        except: pass
-    df = pd.DataFrame(rows).drop_duplicates(subset=['Link']) if rows else pd.DataFrame()
-    if not df.empty:
-        df["Date"] = pd.to_datetime(df["Date"])
-        df = df.sort_values("Date", ascending=False)
-    return df
-
-@st.cache_data(show_spinner=False)
-def load_data_bdf(start_date_str, end_date_str):
-    base_url = "https://www.banque-france.fr/en/governor-interventions"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try: start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
-    except: start_date = datetime.datetime(2000, 1, 1)
-    rows, page = [], 0
-    while True:
-        try:
-            response = requests.get(base_url, headers=headers, params={'category[7052]': '7052', 'page': page}, timeout=12)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            cards = soup.find_all('div', class_=lambda c: c and 'card' in c)
-            if not cards: break
-            items_found = 0
-            for card in cards:
-                a = card.find('a', href=True)
-                if not a or not a.find('span', class_='title-truncation'): continue
-                titulo_raw, link = a.find('span', class_='title-truncation').get_text(strip=True), "https://www.banque-france.fr" + a['href']
-                date_s = card.find('small')
-                if not date_s: continue
-                fecha_clean = re.sub(r'(\d+)(st|nd|rd|th)\s+of\s+', r'\1 ', date_s.get_text(strip=True))
-                try: parsed_date = parser.parse(fecha_clean)
-                except: continue
-                if not any(r['Link'] == link for r in rows):
-                    rows.append({"Date": parsed_date, "Title": titulo_raw, "Link": link, "Organismo": "BdF (Francia)"})
-                    items_found += 1
-            if items_found == 0 or (rows and rows[-1]['Date'] < start_date): break
-            page += 1
-            time.sleep(0.3)
-        except: break
+    
+    speeches_url = "https://www.federalreserve.gov/json/ne-speeches.json"
+    
+    try:
+        print(f"   📡 Cargando discursos de la Fed desde API...")
+        response = requests.get(speeches_url, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            # Decodificar con utf-8-sig para eliminar BOM
+            content = response.content.decode('utf-8-sig')
+            speeches = json.loads(content)
+            print(f"   📚 Total de discursos en API: {len(speeches)}")
+            
+            for speech in speeches:
+                date_str = speech.get('d', '')
+                if not date_str:
+                    continue
+                
+                try:
+                    date_part = date_str.split(' ')[0]
+                    month, day, year = map(int, date_part.split('/'))
+                    parsed_date = datetime.datetime(year, month, day)
+                except Exception as e:
+                    continue
+                
+                if parsed_date.year not in anios_num:
+                    continue
+                
+                titulo = speech.get('t', '')
+                speaker_raw = speech.get('s', '')
+                link = speech.get('l', '')
+                
+                if not titulo or not link:
+                    continue
+                
+                # ========== CORRECCIÓN: Extraer nombre completo ==========
+                speaker_clean = speaker_raw
+                
+                # Patrón para extraer nombre completo (nombre + apellido)
+                # Ejemplos:
+                # "Vice Chair for Supervision Michelle W. Bowman" -> "Michelle W. Bowman"
+                # "Governor Michael S. Barr" -> "Michael S. Barr"
+                # "Chair Jerome H. Powell" -> "Jerome H. Powell"
+                # "Vice Chair Philip N. Jefferson" -> "Philip N. Jefferson"
+                # "Governor Lisa D. Cook" -> "Lisa D. Cook"
+                # "Governor Stephen I. Miran" -> "Stephen I. Miran"
+                # "Governor Christopher J. Waller" -> "Christopher J. Waller"
+                
+                # Buscar patrón: cargo + nombre (con posible inicial de segundo nombre)
+                name_match = re.search(
+                    r'(?:Chair|Vice Chair(?: for Supervision)?|Governor|President|Director)\s+([A-Z][a-z]+(?:\s+[A-Z]\.?(?:\s+[A-Z][a-z]+)?)?(?:\s+[A-Z][a-z]+)?)',
+                    speaker_raw
+                )
+                
+                if name_match:
+                    speaker_clean = name_match.group(1).strip()
+                else:
+                    # Fallback: tomar las últimas 2-3 palabras que parezcan un nombre
+                    words = speaker_raw.split()
+                    # Buscar palabras que empiecen con mayúscula (posible nombre)
+                    name_words = [w for w in words if re.match(r'^[A-Z][a-z]*\.?$', w)]
+                    if len(name_words) >= 2:
+                        speaker_clean = ' '.join(name_words[-2:])  # Nombre y apellido
+                    elif len(name_words) == 1:
+                        speaker_clean = name_words[-1]
+                    else:
+                        speaker_clean = speaker_raw
+                
+                # Limpiar puntos y espacios extra
+                speaker_clean = re.sub(r'\s+', ' ', speaker_clean).strip()
+                
+                # Construir URL completa
+                if link and not link.startswith('http'):
+                    full_link = f"https://www.federalreserve.gov{link}"
+                else:
+                    full_link = link
+                
+                titulo_final = f"{speaker_clean}: {titulo}"
+                
+                rows.append({
+                    "Date": parsed_date,
+                    "Title": titulo_final,
+                    "Link": full_link,
+                    "Organismo": "Fed (Estados Unidos)"
+                })
+                print(f"      ✅ {parsed_date.strftime('%d/%m/%Y')}: {speaker_clean} - {titulo[:50]}...")
+            
+        else:
+            print(f"   ❌ Error en API de la Fed: {response.status_code}")
+            
+    except Exception as e:
+        print(f"   ❌ Error en load_data_fed: {e}")
+        import traceback
+        traceback.print_exc()
+    
     df = pd.DataFrame(rows)
     if not df.empty:
         df["Date"] = pd.to_datetime(df["Date"])
         df = df.sort_values("Date", ascending=False)
+        df = df.drop_duplicates(subset=['Title'], keep='first')
+        df = df.drop_duplicates(subset=['Link'], keep='first')
+    
+    print(f"📊 Fed (Estados Unidos) - Total: {len(df)} discursos")
     return df
 
 @st.cache_data(show_spinner=False)
