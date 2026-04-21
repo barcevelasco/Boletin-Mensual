@@ -3358,7 +3358,7 @@ def load_discursos_fmi(start_date_str, end_date_str):
 @st.cache_data(show_spinner=False)
 def load_data_ecb(start_date_str, end_date_str):
     """
-    Extractor ECB (Europa) - Prioriza URLs con hash
+    Extractor ECB (Europa) - Versión estable con Selenium estándar
     """
     import datetime
     import re
@@ -3377,8 +3377,6 @@ def load_data_ecb(start_date_str, end_date_str):
         end_date = datetime.datetime.now()
 
     rows = []
-    seen_titles = set()
-    
     year = start_date.year
     month = start_date.month
     
@@ -3389,7 +3387,7 @@ def load_data_ecb(start_date_str, end_date_str):
         'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
     }
     
-    print("   🚀 Extrayendo discursos del ECB...")
+    print("   🚀 Extrayendo discursos del ECB (modo estable)...")
     
     try:
         chrome_options = Options()
@@ -3402,130 +3400,77 @@ def load_data_ecb(start_date_str, end_date_str):
         driver = webdriver.Chrome(options=chrome_options)
         list_url = f"https://www.ecb.europa.eu/press/pubbydate/html/index.en.html?name_of_publication=Speech&year={year}"
         driver.get(list_url)
+        time.sleep(5)
         
-        time.sleep(8)
-        for _ in range(5):
+        # Scroll para cargar todo
+        for _ in range(3):
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(2)
         
-        html = driver.page_source
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
         driver.quit()
         
-        soup = BeautifulSoup(html, 'html.parser')
-        
-        # ========== PASO 1: Extraer TODAS las URLs con hash ==========
-        url_hash_map = {}
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            # Buscar URLs que contengan ~ (hash)
-            if 'ecb.sp' in href and '~' in href:
-                date_match = re.search(r'ecb\.sp(?:20)?(\d{2})(\d{2})(\d{2})', href)
-                if date_match:
-                    y = 2000 + int(date_match.group(1))
-                    m = int(date_match.group(2))
-                    d = int(date_match.group(3))
-                    
-                    if y == year and m == month:
-                        fecha_key = f"{y}-{m}-{d}"
-                        if fecha_key not in url_hash_map:
-                            url_hash_map[fecha_key] = []
-                        
-                        full_url = href if href.startswith('http') else f"https://www.ecb.europa.eu{href}"
-                        # Obtener el texto del enlace (título)
-                        link_text = link.get_text(strip=True)
-                        
-                        url_hash_map[fecha_key].append({
-                            'url': full_url,
-                            'link_text': link_text
-                        })
-                        print(f"   📎 URL con hash encontrada para {d:02d}/{m:02d}: {full_url[:80]}...")
-        
-        print(f"\n   📊 URLs con hash por fecha: {sum(len(v) for v in url_hash_map.values())}")
-        
-        # ========== PASO 2: Extraer títulos y autores del texto ==========
-        all_text = soup.get_text()
-        date_pattern = r'(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})'
-        
-        for match in re.finditer(date_pattern, all_text):
-            day = int(match.group(1))
-            mes_str = match.group(2).lower()
-            año = int(match.group(3))
+        # Buscar elementos con fechas
+        for row in soup.find_all('div', class_='list-item'):
+            date_elem = row.find('span', class_='list-item-date')
+            title_elem = row.find('span', class_='list-item-title')
             
-            if año != year:
+            if not date_elem or not title_elem:
                 continue
             
-            mes_num = meses.get(mes_str, 0)
-            if mes_num != month:
+            date_text = date_elem.get_text(strip=True)
+            title_text = title_elem.get_text(strip=True)
+            link_elem = title_elem.find('a')
+            link = link_elem.get('href') if link_elem else None
+            
+            if not link:
                 continue
             
-            start_pos = match.end()
-            context = all_text[start_pos:start_pos + 800]
-            
-            if 'SPEECH' not in context.upper():
+            # Parsear fecha
+            try:
+                # Formato: "09 January 2026"
+                parsed_date = parser.parse(date_text)
+                if parsed_date.tzinfo:
+                    parsed_date = parsed_date.replace(tzinfo=None)
+            except:
                 continue
             
-            speech_match = re.search(r'SPEECH\s+([^\n]+)', context, re.IGNORECASE)
-            if not speech_match:
+            if parsed_date.year != year or parsed_date.month != month:
                 continue
             
-            titulo = speech_match.group(1).strip()
-            titulo = re.sub(r'\s+', ' ', titulo).strip()
-            
-            # Filtrar solo basura obvia
-            if titulo.lower() in ['select', 'topic', 'year', 'board member', 'jel code']:
+            if parsed_date < start_date or parsed_date > end_date:
                 continue
             
-            # Extraer autor
+            # Extraer autor si es posible
             autor = ""
-            after_title = context[context.find(titulo) + len(titulo):]
-            autor_match = re.search(r'\n\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\s*\n', after_title)
+            autor_match = re.search(r'by\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', title_text, re.IGNORECASE)
             if autor_match:
-                autor_raw = autor_match.group(1).strip()
-                autor = re.sub(r'\s*Details.*$', '', autor_raw, flags=re.IGNORECASE)
-                autor = autor.strip()
+                autor = clean_author_name(autor_match.group(1))
             
-            parsed_date = datetime.datetime(año, mes_num, day)
-            fecha_key = f"{año}-{mes_num}-{day}"
+            # Limpiar título
+            title_clean = re.sub(r'by\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*', '', title_text, flags=re.IGNORECASE)
+            title_clean = re.sub(r'\s+', ' ', title_clean).strip()
             
-            # ========== BUSCAR URL CON HASH para este discurso ==========
-            url_final = None
+            # Construir título final
+            if autor:
+                titulo_final = f"{autor}: {title_clean}"
+            else:
+                titulo_final = title_clean
             
-            if fecha_key in url_hash_map:
-                # Intentar asociar por título
-                for item in url_hash_map[fecha_key]:
-                    # Si el texto del enlace contiene el título o el autor
-                    if titulo.lower() in item['link_text'].lower() or autor.lower() in item['link_text'].lower():
-                        url_final = item['url']
-                        print(f"      🔗 Asociado por coincidencia: {titulo[:40]}... -> {item['link_text'][:40]}...")
-                        break
-                
-                # Si no se encontró coincidencia, usar la primera URL con hash
-                if not url_final and url_hash_map[fecha_key]:
-                    url_final = url_hash_map[fecha_key][0]['url']
-                    print(f"      🔗 Usando primera URL con hash para {day:02d}/{month:02d}")
+            # Construir URL absoluta
+            if link.startswith('/'):
+                link = f"https://www.ecb.europa.eu{link}"
             
-            # Si no hay URL con hash, construir genérica (fallback)
-            if not url_final:
-                year_short = str(year)[2:]
-                url_final = f"https://www.ecb.europa.eu/press/key/date/{year}/html/ecb.sp{year_short}{month:02d}{day:02d}.en.html"
-                print(f"      ⚠️ Usando URL genérica para {day:02d}/{month:02d}")
-            
-            titulo_final = f"{autor}: {titulo}" if autor else titulo
-            titulo_final = re.sub(r'\s+', ' ', titulo_final).strip()
-            
-            # Evitar duplicados por título
-            if titulo_final not in seen_titles:
-                seen_titles.add(titulo_final)
-                rows.append({
-                    "Date": parsed_date,
-                    "Title": titulo_final,
-                    "Link": url_final,
-                    "Organismo": "ECB (Europa)"
-                })
-                print(f"      ✅ {parsed_date.strftime('%d/%m/%Y')}: {titulo_final[:60]}...")
+            rows.append({
+                "Date": parsed_date,
+                "Title": titulo_final,
+                "Link": link,
+                "Organismo": "ECB (Europa)"
+            })
+            print(f"      ✅ {parsed_date.strftime('%d/%m/%Y')}: {titulo_final[:60]}...")
         
     except Exception as e:
-        print(f"   ❌ Error: {e}")
+        print(f"   ❌ Error en load_data_ecb: {e}")
         import traceback
         traceback.print_exc()
     
