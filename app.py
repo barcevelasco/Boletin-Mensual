@@ -4910,20 +4910,30 @@ if modo_app == "Boletín":
                 df = pd.DataFrame()
                 try:
                     if org == "BPI": df = load_data_bis()
-                    elif org == "ECB (Europa)": df = load_data_ecb(sd, ed)
-                    elif org == "BoE (Inglaterra)": df = load_discursos_boe(sd, ed)
+                    elif org == "ECB (Europa)": 
+                        df = load_data_ecb(sd, ed)
+                    elif org == "BoE (Inglaterra)": 
+                        df = load_discursos_boe(sd, ed)
                     elif org == "FMI":
                         df = load_discursos_fmi(sd, ed)
                     elif org == "BdE (España)":
                         df = load_data_bde(sd, ed)
-                    elif org == "BBk (Alemania)": df = load_data_bbk(sd, ed)
-                    elif org == "Fed (Estados Unidos)": df = load_data_fed(a_num)
-                    elif org == "BdF (Francia)": df = load_data_bdf(sd, ed)
-                    elif org == "BM": df = load_data_bm(sd, ed)
-                    elif org == "BoC (Canadá)": df = load_data_boc(sd, ed)
-                    elif org == "BoJ (Japón)": df = load_data_boj(sd, ed)
-                    elif org == "CEF": df = load_data_cef(sd, ed)
-                    elif org == "PBoC (China)": df = load_data_pboc(sd, ed)
+                    elif org == "BBk (Alemania)": 
+                        df = load_data_bbk(sd, ed)
+                    elif org == "Fed (Estados Unidos)": 
+                        df = load_data_fed(a_num)
+                    elif org == "BdF (Francia)": 
+                        df = load_data_bdf(sd, ed)
+                    elif org == "BM": 
+                        df = load_data_bm(sd, ed)
+                    elif org == "BoC (Canadá)": 
+                        df = load_data_boc(sd, ed)
+                    elif org == "BoJ (Japón)": 
+                        df = load_data_boj(sd, ed)
+                    elif org == "CEF": 
+                        df = load_data_cef(sd, ed)
+                    elif org == "PBoC (China)": 
+                        df = load_data_pboc(sd, ed)
                 except Exception as e: pass 
                 
                 if not df.empty:
@@ -5108,7 +5118,8 @@ elif modo_app == "Categorías":
                     # --- LÓGICA DE EXTRACCIÓN POR TIPO ---
                     if tipo_doc == "Discursos":
                         if o == "BPI": df = load_data_bis()
-                        elif o == "ECB (Europa)": df = load_data_ecb(sd, ed)
+                        elif o == "ECB (Europa)": 
+                            df = load_data_ecb(sd, ed)
                         elif o == "BBk (Alemania)": df = load_data_bbk(sd, ed)
                         elif o == "Fed (Estados Unidos)": df = load_data_fed(a_num)
                         elif o == "BdF (Francia)": df = load_data_bdf(sd, ed)
