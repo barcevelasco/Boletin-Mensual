@@ -3358,15 +3358,15 @@ def load_discursos_fmi(start_date_str, end_date_str):
 @st.cache_data(show_spinner=False)
 def load_data_ecb(start_date_str, end_date_str):
     """
-    Extractor ECB (Europa) - Versión estable con Selenium estándar
+    Extractor ECB (Europa) - Versión para undetected-chromedriver
     """
+    import undetected_chromedriver as uc
     import datetime
     import re
     import time
     from bs4 import BeautifulSoup
     import pandas as pd
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
+    from dateutil import parser
 
     try:
         start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
@@ -3387,48 +3387,47 @@ def load_data_ecb(start_date_str, end_date_str):
         'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
     }
     
-    print("   🚀 Extrayendo discursos del ECB (modo estable)...")
+    print("   🚀 Extrayendo discursos del ECB...")
     
     try:
-        chrome_options = Options()
-        chrome_options.add_argument("--headless=new")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        options = uc.ChromeOptions()
+        options.add_argument('--headless=new')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--window-size=1920,1080')
+        options.add_argument('--remote-debugging-port=9222')
         
-        driver = webdriver.Chrome(options=chrome_options)
+        driver = uc.Chrome(options=options, version_main=114)
+        
         list_url = f"https://www.ecb.europa.eu/press/pubbydate/html/index.en.html?name_of_publication=Speech&year={year}"
         driver.get(list_url)
-        time.sleep(5)
+        time.sleep(8)
         
         # Scroll para cargar todo
-        for _ in range(3):
+        for _ in range(5):
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(2)
         
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         driver.quit()
         
-        # Buscar elementos con fechas
-        for row in soup.find_all('div', class_='list-item'):
-            date_elem = row.find('span', class_='list-item-date')
-            title_elem = row.find('span', class_='list-item-title')
+        # Extraer usando selectores más robustos
+        for item in soup.find_all(['div', 'li'], class_=lambda c: c and ('list-item' in c or 'result' in c) if c else False):
+            date_elem = item.find('span', class_=lambda c: c and 'date' in c if c else False)
+            title_elem = item.find('a', href=lambda x: x and '/press/key/' in x if x else False)
             
             if not date_elem or not title_elem:
                 continue
             
             date_text = date_elem.get_text(strip=True)
             title_text = title_elem.get_text(strip=True)
-            link_elem = title_elem.find('a')
-            link = link_elem.get('href') if link_elem else None
+            link = title_elem.get('href')
             
             if not link:
                 continue
             
-            # Parsear fecha
             try:
-                # Formato: "09 January 2026"
                 parsed_date = parser.parse(date_text)
                 if parsed_date.tzinfo:
                     parsed_date = parsed_date.replace(tzinfo=None)
@@ -3441,7 +3440,7 @@ def load_data_ecb(start_date_str, end_date_str):
             if parsed_date < start_date or parsed_date > end_date:
                 continue
             
-            # Extraer autor si es posible
+            # Extraer autor
             autor = ""
             autor_match = re.search(r'by\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', title_text, re.IGNORECASE)
             if autor_match:
@@ -3451,13 +3450,11 @@ def load_data_ecb(start_date_str, end_date_str):
             title_clean = re.sub(r'by\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*', '', title_text, flags=re.IGNORECASE)
             title_clean = re.sub(r'\s+', ' ', title_clean).strip()
             
-            # Construir título final
             if autor:
                 titulo_final = f"{autor}: {title_clean}"
             else:
                 titulo_final = title_clean
             
-            # Construir URL absoluta
             if link.startswith('/'):
                 link = f"https://www.ecb.europa.eu{link}"
             
