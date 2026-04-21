@@ -3450,40 +3450,168 @@ def load_data_bbk(start_date_str, end_date_str):
         df = df.sort_values("Date", ascending=False)
     return df
 
+## Discursos - Banco de China - PBoC
 @st.cache_data(show_spinner=False)
 def load_data_pboc(start_date_str, end_date_str):
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try: start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
-    except: start_date = datetime.datetime(2000, 1, 1)
-    rows, page = [], 1
-    while True:
-        url = "https://www.pbc.gov.cn/en/3688110/3688175/index.html" if page == 1 else f"https://www.pbc.gov.cn/en/3688110/3688175/0180081b-{page}.html"
+    """
+    Extractor PBoC (China) - Versión final con limpieza de título y cargos
+    """
+    import datetime
+    import re
+    import requests
+    from bs4 import BeautifulSoup
+    import pandas as pd
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    try:
+        start_date = datetime.datetime.strptime(start_date_str, '%d.%m.%Y')
+        end_date = datetime.datetime.strptime(end_date_str, '%d.%m.%Y')
+        print(f"📅 PBoC (China): {start_date.date()} a {end_date.date()}")
+    except:
+        start_date = datetime.datetime(2025, 1, 1)
+        end_date = datetime.datetime.now()
+
+    rows = []
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
+    }
+    
+    year = start_date.year
+    month = start_date.month
+    
+    print(f"   📡 Buscando discursos de {year}-{month:02d}...")
+    
+    # Intentar ambas URLs posibles
+    urls_to_try = [
+        "https://www.pbc.gov.cn/en/3688110/3688175/index.html",
+        "https://www.pbc.gov.cn/en/3688110/3688175/index.html?page=1"
+    ]
+    
+    for url in urls_to_try:
         try:
-            res = requests.get(url, headers=headers, timeout=12)
-            res.encoding = 'utf-8' 
-            soup = BeautifulSoup(res.text, 'html.parser')
-            items = soup.find_all('div', class_='ListR')
-            if not items: break
-            items_found = 0
+            response = requests.get(url, headers=headers, timeout=15, verify=False)
+            
+            if response.status_code != 200:
+                continue
+                
+            # Corregir encoding
+            response.encoding = 'utf-8'
+            soup = BeautifulSoup(response.text, 'html.parser')
+            items = soup.find_all('div', class_='prhhd1')
+            
+            if not items:
+                # Fallback: buscar otros selectores
+                items = soup.find_all('div', class_='ListR')
+                if not items:
+                    items = soup.find_all('li', class_='clearfix')
+            
             for item in items:
+                # Fecha
                 date_span = item.find('span', class_='prhhdata')
-                a_tag = item.find('a')
-                if not date_span or not a_tag: continue
-                try: parsed_date = parser.parse(date_span.get_text(strip=True))
-                except: continue
-                titulo_raw = html.unescape(a_tag.get('title', a_tag.get_text(strip=True)))
-                link = "https://www.pbc.gov.cn" + a_tag.get('href', '') if a_tag.get('href', '').startswith('/') else a_tag.get('href', '')
+                if not date_span:
+                    date_span = item.find('span', class_='date')
+                if not date_span:
+                    continue
+                
+                fecha_texto = date_span.get_text(strip=True)
+                
+                try:
+                    parsed_date = datetime.datetime.strptime(fecha_texto, '%Y-%m-%d')
+                except:
+                    continue
+                
+                if parsed_date.year != year or parsed_date.month != month:
+                    continue
+                
+                # Enlace
+                link_tag = item.find('a', href=True)
+                if not link_tag:
+                    continue
+                
+                # Extraer título
+                listr_div = item.find('div', class_='ListR')
+                if not listr_div:
+                    listr_div = item.find('div', class_='listR')
+                if not listr_div:
+                    # Si no hay div específico, usar el texto del enlace
+                    titulo_completo = link_tag.get_text(strip=True)
+                else:
+                    titulo_completo = listr_div.get_text(strip=True)
+                
+                # Eliminar la fecha del título
+                titulo_completo = titulo_completo.replace(fecha_texto, '').strip()
+                
+                # ========== LIMPIEZA DEL TÍTULO ==========
+                # 1. Eliminar todo después de "--Keynote" o "Keynote Speech by"
+                titulo_limpio = re.split(r'--Keynote|Keynote Speech by', titulo_completo)[0].strip()
+                
+                # 2. Extraer autor (sin cargo)
+                autor = ""
+                
+                # Patrón 1: "Governor Pan Gongsheng" o "Deputy Governor X"
+                autor_match = re.search(r'(?:Governor|Deputy Governor|Administrator|Director|President)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', titulo_completo)
+                if autor_match:
+                    autor = autor_match.group(1).strip()
+                
+                # Patrón 2: "by Pan Gongsheng"
+                if not autor:
+                    name_match = re.search(r'by\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', titulo_completo)
+                    if name_match:
+                        autor = name_match.group(1).strip()
+                
+                # Patrón 3: Si el título comienza con un nombre (ej. "Pan Gongsheng:")
+                if not autor:
+                    name_start_match = re.match(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s*[:：]', titulo_limpio)
+                    if name_start_match:
+                        autor = name_start_match.group(1).strip()
+                        # Eliminar el nombre del título
+                        titulo_limpio = re.sub(rf'^{re.escape(autor)}[:：]\s*', '', titulo_limpio)
+                
+                # 4. Construir título final
+                if autor:
+                    # Limpiar espacios y caracteres extraños
+                    autor = re.sub(r'\s+', ' ', autor).strip()
+                    titulo_limpio = re.sub(r'\s+', ' ', titulo_limpio).strip()
+                    titulo_final = f"{autor}: {titulo_limpio}"
+                else:
+                    titulo_final = titulo_limpio
+                
+                # Limpiar apóstrofes mal codificados
+                titulo_final = titulo_final.replace('â', "'").replace('â€™', "'")
+                # Eliminar espacios múltiples
+                titulo_final = re.sub(r'\s+', ' ', titulo_final).strip()
+                
+                link = link_tag.get('href')
+                if link and link.startswith('/'):
+                    link = f"https://www.pbc.gov.cn{link}"
+                elif not link:
+                    continue
+                
+                # Verificar duplicados
                 if not any(r['Link'] == link for r in rows):
-                    rows.append({"Date": parsed_date, "Title": titulo_raw, "Link": link, "Organismo": "PBoC (China)"})
-                    items_found += 1
-            if items_found == 0 or (rows and rows[-1]['Date'] < start_date): break
-            page += 1
-            time.sleep(0.5) 
-        except: break
+                    rows.append({
+                        "Date": parsed_date,
+                        "Title": titulo_final,
+                        "Link": link,
+                        "Organismo": "PBoC (China)"
+                    })
+                    print(f"      ✅ {parsed_date.strftime('%d/%m/%Y')}: {titulo_final[:60]}...")
+                    
+        except Exception as e:
+            print(f"   ⚠️ Error con URL {url}: {e}")
+            continue
+    
     df = pd.DataFrame(rows)
     if not df.empty:
         df["Date"] = pd.to_datetime(df["Date"])
         df = df.sort_values("Date", ascending=False)
+        df = df.drop_duplicates(subset=['Title'], keep='first')
+        df = df.drop_duplicates(subset=['Link'], keep='first')
+    
+    print(f"📊 PBoC (China) - Total: {len(df)} discursos")
     return df
 
 @st.cache_data(show_spinner=False)
