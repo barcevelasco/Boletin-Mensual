@@ -3431,6 +3431,7 @@ def load_data_ecb(start_date_str, end_date_str):
                             url_hash_map[fecha_key] = []
                         
                         full_url = href if href.startswith('http') else f"https://www.ecb.europa.eu{href}"
+                        # Obtener el texto del enlace (título)
                         link_text = link.get_text(strip=True)
                         
                         url_hash_map[fecha_key].append({
@@ -3490,16 +3491,20 @@ def load_data_ecb(start_date_str, end_date_str):
             url_final = None
             
             if fecha_key in url_hash_map:
+                # Intentar asociar por título
                 for item in url_hash_map[fecha_key]:
+                    # Si el texto del enlace contiene el título o el autor
                     if titulo.lower() in item['link_text'].lower() or autor.lower() in item['link_text'].lower():
                         url_final = item['url']
                         print(f"      🔗 Asociado por coincidencia: {titulo[:40]}... -> {item['link_text'][:40]}...")
                         break
                 
+                # Si no se encontró coincidencia, usar la primera URL con hash
                 if not url_final and url_hash_map[fecha_key]:
                     url_final = url_hash_map[fecha_key][0]['url']
                     print(f"      🔗 Usando primera URL con hash para {day:02d}/{month:02d}")
             
+            # Si no hay URL con hash, construir genérica (fallback)
             if not url_final:
                 year_short = str(year)[2:]
                 url_final = f"https://www.ecb.europa.eu/press/key/date/{year}/html/ecb.sp{year_short}{month:02d}{day:02d}.en.html"
@@ -3508,6 +3513,7 @@ def load_data_ecb(start_date_str, end_date_str):
             titulo_final = f"{autor}: {titulo}" if autor else titulo
             titulo_final = re.sub(r'\s+', ' ', titulo_final).strip()
             
+            # Evitar duplicados por título
             if titulo_final not in seen_titles:
                 seen_titles.add(titulo_final)
                 rows.append({
